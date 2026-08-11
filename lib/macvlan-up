@@ -1,0 +1,36 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+CONF="/etc/boxproxy/instances/${ID}.conf"
+
+if [ ! -f "$CONF" ]; then
+    echo "Config not found: $CONF"
+    exit 1
+fi
+
+. "$CONF"
+
+WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
+
+if [ ! -f "$WAN_CONF" ]; then
+    echo "WAN config not found: $WAN_CONF"
+    exit 1
+fi
+
+. "$WAN_CONF"
+
+if [ ! -d "/sys/class/net/$PARENT_IF" ]; then
+    echo "Parent interface not found: $PARENT_IF"
+    exit 1
+fi
+
+ip link set dev "$PARENT_IF" up
+
+if ip link show "$MACVLAN_IF" >/dev/null 2>&1; then
+    ip link delete "$MACVLAN_IF"
+fi
+
+ip link add "$MACVLAN_IF" link "$PARENT_IF" type macvlan mode bridge
+ip link set "$MACVLAN_IF" address "$MAC"
+ip link set "$MACVLAN_IF" up

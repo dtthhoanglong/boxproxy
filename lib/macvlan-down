@@ -1,0 +1,14 @@
+#!/bin/bash
+
+ID="$1"
+CONF="/etc/boxproxy/instances/${ID}.conf"
+
+[ -f "$CONF" ] || exit 0
+
+. "$CONF"
+
+if ip link show "$MACVLAN_IF" >/dev/null 2>&1; then
+    ip link delete "$MACVLAN_IF"
+fi
+
+exit 0

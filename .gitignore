@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime / generated config
+wans/
+instances/
+client-routes/
+dante/
+squid/
+
+# Secrets
+*.secret
+*.passwd
+*.key
+
+# Editor / OS
+*.swp
+*.tmp
+.DS_Store

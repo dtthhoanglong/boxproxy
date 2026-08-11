@@ -1,0 +1,48 @@
+#!/bin/bash
+set -e
+
+CONF_DIR="/etc/boxproxy/client-routes"
+
+mkdir -p "$CONF_DIR"
+
+# Xóa các rule do client routing manager tạo trước đó
+# Chỉ xóa đúng dải priority 2000-2999, không đụng source-rule PPPoE 100x.
+for PREF in $(ip rule show | awk -F: '$1 >= 2000 && $1 < 3000 {gsub(/ /,"",$1); print $1}'); do
+    ip rule del pref "$PREF" 2>/dev/null || true
+done
+
+# Xóa các iptables rule cũ có comment BOXPROXY-CLIENT
+iptables -t mangle -S PREROUTING \
+    | grep 'BOXPROXY-CLIENT' \
+    | sed 's/^-A /-D /' \
+    | while read -r RULE; do
+        iptables -t mangle $RULE 2>/dev/null || true
+    done
+
+iptables -t nat -S POSTROUTING \
+    | grep 'BOXPROXY-CLIENT' \
+    | sed 's/^-A /-D /' \
+    | while read -r RULE; do
+        iptables -t nat $RULE 2>/dev/null || true
+    done
+
+iptables -S FORWARD \
+    | grep 'BOXPROXY-CLIENT' \
+    | sed 's/^-A /-D /' \
+    | while read -r RULE; do
+        iptables $RULE 2>/dev/null || true
+    done
+
+# Apply lại toàn bộ mapping đang enable
+for CONF in "$CONF_DIR"/*.conf; do
+    [ -f "$CONF" ] || continue
+
+    unset ENABLED
+    . "$CONF"
+
+    [ "${ENABLED:-yes}" = "yes" ] || continue
+
+    /usr/local/lib/boxproxy/client-route-up "$CONF"
+done
+
+echo "Client routes synchronized"

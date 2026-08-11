@@ -1,0 +1,31 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+CONF="/etc/boxproxy/instances/${ID}.conf"
+
+[ -f "$CONF" ] || exit 1
+. "$CONF"
+
+TABLE=$((100 + ID))
+
+LOCAL_IP=$(ip -4 -o addr show dev "$PPP_IF" | awk '{print $4}' | cut -d/ -f1)
+
+if [ -z "$LOCAL_IP" ]; then
+    echo "No IPv4 found on $PPP_IF"
+    exit 1
+fi
+
+ip route flush table "$TABLE" 2>/dev/null || true
+
+# Fail-close fallback:
+# nếu route PPPoE biến mất thì table này vẫn chặn traffic,
+# không cho rơi xuống main table.
+ip route add unreachable default metric 42760 table "$TABLE"
+
+# Khi PPPoE online, route này có metric thấp hơn nên được ưu tiên.
+ip route add default dev "$PPP_IF" metric 10 table "$TABLE"
+
+# Chỉ quản lý source-rule của chính PPPoE này.
+ip rule del pref "$((1000 + ID))" 2>/dev/null || true
+ip rule add from "$LOCAL_IP"/32 table "$TABLE" priority "$((1000 + ID))"

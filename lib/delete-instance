@@ -1,0 +1,48 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+
+if [ -z "$ID" ]; then
+    echo "Usage: delete-instance <id>"
+    exit 1
+fi
+
+CONF="/etc/boxproxy/instances/${ID}.conf"
+
+if [ ! -f "$CONF" ]; then
+    echo "Proxy $ID does not exist"
+    exit 0
+fi
+
+. "$CONF"
+
+NN=$(printf '%02d' "$ID")
+
+# Dừng proxy trước
+/usr/local/sbin/boxproxy stop "$ID" || true
+
+# Disable khỏi boot nếu đã enable
+systemctl disable "boxproxy-macvlan@${ID}.service" >/dev/null 2>&1 || true
+systemctl disable "boxproxy-pppoe@${ID}.service" >/dev/null 2>&1 || true
+systemctl disable "boxproxy-dante@${ID}.service" >/dev/null 2>&1 || true
+systemctl disable "boxproxy-squid@${ID}.service" >/dev/null 2>&1 || true
+
+# Xóa routing còn sót
+/usr/local/lib/boxproxy/routing-down "$ID" || true
+
+# Xóa generated configs
+rm -f "/etc/boxproxy/dante/${ID}.conf"
+rm -f "/etc/boxproxy/squid/${ID}.conf"
+
+# Xóa PPP peer
+rm -f "/etc/ppp/peers/pppoe${NN}"
+
+# Xóa account proxy
+htpasswd -D /etc/squid/passwd "$PROXY_USER" >/dev/null 2>&1 || true
+userdel "$PROXY_USER" >/dev/null 2>&1 || true
+
+# Xóa instance cuối cùng
+rm -f "$CONF"
+
+echo "Proxy $ID deleted"

@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BoxProxy</title>
+
+<style>
+body {
+    font-family: Arial, sans-serif;
+    background: #f4f4f4;
+    margin: 18px;
+}
+
+h1 {
+    margin: 0 0 14px 0;
+}
+
+h2 {
+    margin: 14px 0 8px 0;
+}
+
+.wan-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    align-items: start;
+}
+
+.nav {
+    margin-bottom: 16px;
+}
+
+.nav a {
+    display: inline-block;
+    padding: 8px 12px;
+    margin-right: 8px;
+    border: 1px solid #aaa;
+    background: white;
+    text-decoration: none;
+    color: black;
+    border-radius: 4px;
+}
+
+.wan-grid > .card {
+    margin: 0;
+}
+
+@media (max-width: 1200px) {
+    .wan-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 700px) {
+    .wan-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.status.connecting {
+    background: #f0ad4e;
+    color: white;
+}
+
+.wan-config select {
+    width: 190px;
+    box-sizing: border-box;
+    padding: 6px;
+}
+
+.card {
+    background: white;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    border-radius: 8px;
+    box-shadow: 0 1px 5px rgba(0,0,0,.15);
+}
+
+.count-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.count-row input {
+    width: 110px;
+}
+
+.session-card {
+    background: white;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    border-radius: 8px;
+    box-shadow: 0 1px 5px rgba(0,0,0,.15);
+}
+
+.session-title {
+    font-size: 18px;
+    font-weight: bold;
+    margin-bottom: 10px;
+}
+
+.session-info {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px 30px;
+    padding-bottom: 9px;
+    border-bottom: 1px solid #ddd;
+}
+
+.info-item {
+    white-space: nowrap;
+}
+
+.online {
+    color: white;
+    background: #16a34a;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+.offline {
+    color: white;
+    background: #dc2626;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+.actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-top: 9px;
+}
+
+.actions form {
+    margin: 0;
+}
+
+.password-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+button {
+    padding: 6px 11px;
+    cursor: pointer;
+}
+
+input {
+    padding: 6px;
+}
+
+.password-form input {
+    width: 170px;
+}
+
+.proxy-list {
+    width: 100%;
+    min-height: 75px;
+    box-sizing: border-box;
+    font-family: monospace;
+}
+
+.endpoint {
+    color: #075bb5;
+}
+
+@media (max-width: 900px) {
+    .session-info {
+        gap: 8px 18px;
+    }
+}
+.wan-config {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.wan-config > div {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wan-config > div strong {
+    display: inline-block;
+    width: 120px;
+    flex-shrink: 0;
+}
+
+.wan-config input {
+    width: 190px;
+    box-sizing: border-box;
+}
+
+.wan-count {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.wan-count strong {
+    display: inline-block;
+    width: 120px;
+    flex-shrink: 0;
+}
+
+.wan-count input {
+    width: 190px;
+    box-sizing: border-box;
+}
+
+.wan-buttons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.wan-buttons form {
+    margin: 0;
+}
+
+</style>
+</head>
+
+<body>
+
+<h1>BoxProxy</h1>
+
+<div class="nav">
+    <a href="/">Proxy Management</a>
+    <a href="/routing">LAN Routing</a>
+</div>
+
+<h2>WAN Configuration</h2>
+
+<button type="button" onclick="toggleAddWan()">
+    + Add WAN
+</button>
+
+<div id="addWanBox"
+     class="card"
+     style="display:none; margin-top:10px;">
+
+    <div class="session-title">
+        Add WAN
+    </div>
+
+    <form method="post"
+          action="/wan-add"
+          class="wan-config">
+
+        <div>
+            <strong>Interface:</strong>
+
+            <select
+                name="interface"
+                id="freeInterfaceSelect"
+                required>
+            </select>
+        </div>
+
+        <div>
+            <strong>PPPoE User:</strong>
+
+            <input
+                type="text"
+                name="pppoe_user"
+                required>
+        </div>
+
+        <div>
+            <strong>PPPoE Password:</strong>
+
+            <input
+                type="password"
+                name="pppoe_password"
+                required>
+        </div>
+
+        <div class="wan-buttons">
+            <button type="submit">
+                Create WAN
+            </button>
+
+            <button type="button"
+                    onclick="toggleAddWan()">
+                Cancel
+            </button>
+        </div>
+
+    </form>
+
+</div>
+
+<div class="wan-grid">
+
+{% for w in wans %}
+
+<div class="card">
+
+    <div class="session-title">
+        WAN {{ w.wan_id }} — {{ w.interface }}
+    </div>
+
+<form method="post"
+      action="/wan-save/{{ w.wan_id }}"
+      class="wan-config"
+      id="wan-save-{{ w.wan_id }}">
+
+    <div>
+    <strong>Current Interface:</strong>
+
+    <span>{{ w.interface }}</span>
+
+    <input
+        type="hidden"
+        name="current_interface"
+        value="{{ w.interface }}">
+</div>
+
+<div>
+    <strong>Change Interface:</strong>
+
+    <select
+        name="new_interface"
+        class="wan-edit-interface">
+
+        <option value="">
+            Keep current
+        </option>
+
+    </select>
+</div>
+
+    <div>
+        <strong>PPPoE User:</strong>
+        <input
+            type="text"
+            name="pppoe_user"
+            value="{{ w.pppoe_user }}"
+            required>
+    </div>
+
+    <div>
+        <strong>PPPoE Password:</strong>
+        <input
+    type="password"
+    name="pppoe_password"
+    placeholder="Leave blank to keep current">
+    </div>
+
+</form>
+
+<div class="wan-buttons">
+
+    <button type="submit"
+            form="wan-save-{{ w.wan_id }}">
+        Save WAN
+    </button>
+
+    <form method="post"
+      id="wan-proxy-form-{{ w.wan_id }}"
+      action="{% if w.proxy_enabled == 'yes' %}/wan-proxy/{{ w.wan_id }}/disable{% else %}/wan-proxy/{{ w.wan_id }}/enable{% endif %}">
+
+    <button type="submit"
+            id="wan-proxy-button-{{ w.wan_id }}">
+        {% if w.proxy_enabled == "yes" %}
+            Proxy OFF - WAN {{ w.wan_id }}
+        {% else %}
+            Proxy ON - WAN {{ w.wan_id }}
+        {% endif %}
+    </button>
+
+</form>
+
+
+    <form method="post"
+          action="/wan-delete/{{ w.wan_id }}"
+          onsubmit="return confirm('Delete WAN {{ w.wan_id }} and all PPPoE sessions on this WAN?');">
+        <button type="submit">
+            Delete WAN
+        </button>
+    </form>
+
+</div>
+
+<form method="post"
+      action="/set-count/{{ w.wan_id }}"
+      class="wan-count">
+
+    <strong>Proxy Count:</strong>
+
+    <input
+        type="number"
+        name="count"
+        min="1"
+        value="{{ w.proxy_count }}"
+        required>
+
+    <button type="submit">Apply</button>
+</form>
+</div>
+
+{% endfor %}
+
+</div>
+
+<h2>PPPoE Sessions</h2>
+
+{% for p in proxies %}
+
+<div class="session-card">
+
+    <div class="session-title">
+    Proxy #{{ p.id }} — WAN {{ p.wan_id }}
+</div>
+
+    <div class="session-info">
+
+        <div class="info-item">
+    <strong>Status:</strong>
+    <span
+        id="status-{{ p.id }}"
+        class="status {{ p.state }}">
+        {{ p.state }}
+    </span>
+</div>
+
+        <div class="info-item">
+    <strong>PPPoE:</strong>
+
+    <span id="pppoe-{{ p.id }}">
+        {% if p.pppoe_state == "connected" %}
+            <span class="status online">connected</span>
+        {% elif p.pppoe_state == "connecting" %}
+            <span class="status connecting">connecting</span>
+        {% elif p.pppoe_state == "failed" %}
+            <span class="status offline">failed</span>
+        {% else %}
+            <span class="status offline">stopped</span>
+        {% endif %}
+    </span>
+</div>
+
+        <div class="info-item">
+    <strong>IPv4:</strong>
+    <span
+        id="ip-{{ p.id }}"
+        class="endpoint">
+        {{ p.ip if p.ip else "-" }}
+    </span>
+</div>
+
+        <div class="info-item">
+            <strong>MAC:</strong>
+            {{ p.mac }}
+        </div>
+
+        <div class="info-item">
+        <strong>SOCKS5:</strong>
+<span
+    id="socks-{{ p.id }}"
+    class="endpoint">
+                {% if p.ip %}
+                    {{ p.ip }}:{{ p.socks_port }}
+                {% else %}
+                    -
+                {% endif %}
+            </span>
+        </div>
+
+        <div class="info-item">
+        <strong>HTTP:</strong>
+<span
+    id="http-{{ p.id }}"
+    class="endpoint">
+                {% if p.ip %}
+                    {{ p.ip }}:{{ p.http_port }}
+                {% else %}
+                    -
+                {% endif %}
+            </span>
+        </div>
+
+        <div class="info-item">
+            <strong>User:</strong>
+            {{ p.user }}
+        </div>
+
+    </div>
+
+
+    <div class="actions">
+
+        <form method="post"
+              action="/action/{{ p.id }}/start">
+            <button type="submit">Start</button>
+        </form>
+
+        <form method="post"
+              action="/action/{{ p.id }}/stop">
+            <button type="submit">Stop</button>
+        </form>
+
+        <form method="post"
+              action="/action/{{ p.id }}/restart">
+            <button type="submit">Restart</button>
+        </form>
+
+        <form method="post"
+              action="/action/{{ p.id }}/change-mac">
+            <button type="submit">Change MAC</button>
+        </form>
+
+    <form method="post"
+      id="proxy-form-{{ p.id }}"
+      action="{% if p.proxy_enabled == 'yes' %}/action/{{ p.id }}/proxy-disable{% else %}/action/{{ p.id }}/proxy-enable{% endif %}">
+
+    <button type="submit"
+            id="proxy-button-{{ p.id }}">
+        {% if p.proxy_enabled == "yes" %}
+            Proxy OFF
+        {% else %}
+            Proxy ON
+        {% endif %}
+    </button>
+
+</form>
+
+    <form method="post"
+      action="/change-password/{{ p.id }}">
+
+    <button type="submit">
+        Change Password
+    </button>
+
+</form>
+
+    </div>
+
+</div>
+
+{% endfor %}
+
+
+<h2>SOCKS5 Proxies</h2>
+
+{% for w in wans %}
+
+<div class="card">
+
+    <div class="session-title">
+        WAN {{ w.wan_id }} — {{ w.interface }}
+    </div>
+
+    <textarea
+        id="socksListWan{{ w.wan_id }}"
+        class="proxy-list"
+        readonly></textarea>
+
+    <br><br>
+
+    <button onclick="copySocksWan({{ w.wan_id }})">
+        Copy SOCKS5 WAN {{ w.wan_id }}
+    </button>
+
+</div>
+
+{% endfor %}
+
+<div class="card">
+    <button onclick="copySocksAll()">
+        Copy All SOCKS5
+    </button>
+</div>
+
+
+<h2>HTTP Proxies</h2>
+
+{% for w in wans %}
+
+<div class="card">
+
+    <div class="session-title">
+        WAN {{ w.wan_id }} — {{ w.interface }}
+    </div>
+
+    <textarea
+        id="httpListWan{{ w.wan_id }}"
+        class="proxy-list"
+        readonly></textarea>
+
+    <br><br>
+
+    <button onclick="copyHttpWan({{ w.wan_id }})">
+        Copy HTTP WAN {{ w.wan_id }}
+    </button>
+
+</div>
+
+{% endfor %}
+
+<div class="card">
+    <button onclick="copyHttpAll()">
+        Copy All HTTP
+    </button>
+</div>
+
+<script>
+
+
+
+async function refreshWanStatus() {
+    try {
+        const r = await fetch('/api/wan-status', {
+            cache: 'no-store'
+        });
+
+        const list = await r.json();
+
+        for (const w of list) {
+            const form =
+                document.getElementById('wan-proxy-form-' + w.wan_id);
+
+            const button =
+                document.getElementById('wan-proxy-button-' + w.wan_id);
+
+            if (!form || !button) {
+                continue;
+            }
+
+            if (w.proxy_enabled === 'yes') {
+                button.textContent =
+                    'Proxy OFF - WAN ' + w.wan_id;
+
+                form.action =
+                    '/wan-proxy/' + w.wan_id + '/disable';
+            } else {
+                button.textContent =
+                    'Proxy ON - WAN ' + w.wan_id;
+
+                form.action =
+                    '/wan-proxy/' + w.wan_id + '/enable';
+            }
+        }
+
+    } catch (e) {
+    }
+}
+
+async function loadWanEditInterfaces() {
+    const r = await fetch('/api/free-interfaces');
+    const list = await r.json();
+
+    const selects =
+        document.querySelectorAll('.wan-edit-interface');
+
+    for (const select of selects) {
+
+        while (select.options.length > 1) {
+            select.remove(1);
+        }
+
+        for (const nic of list) {
+            const option = document.createElement('option');
+
+            option.value = nic.interface;
+
+            const link =
+                nic.carrier == 1 ? 'Link UP' : 'No carrier';
+
+            option.textContent =
+                `${nic.interface} — ${nic.mac} — ${link}`;
+
+            select.appendChild(option);
+        }
+    }
+}
+
+async function loadFreeInterfaces() {
+    const r = await fetch('/api/free-interfaces');
+    const list = await r.json();
+
+    const select =
+        document.getElementById('freeInterfaceSelect');
+
+    select.innerHTML = '';
+
+    if (list.length === 0) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'No free interfaces';
+        select.appendChild(option);
+        return;
+    }
+
+    for (const nic of list) {
+        const option = document.createElement('option');
+
+        option.value = nic.interface;
+
+        const link =
+            nic.carrier == 1 ? 'Link UP' : 'No carrier';
+
+        option.textContent =
+            `${nic.interface} — ${nic.mac} — ${link}`;
+
+        select.appendChild(option);
+    }
+}
+
+
+async function toggleAddWan() {
+    const box = document.getElementById('addWanBox');
+
+    if (box.style.display === 'none') {
+        await loadFreeInterfaces();
+        box.style.display = 'block';
+    } else {
+        box.style.display = 'none';
+    }
+}
+
+async function loadWanLists() {
+
+    {% for w in wans %}
+
+    {
+        const r = await fetch('/api/copy-socks/{{ w.wan_id }}');
+        const j = await r.json();
+        document.getElementById(
+            'socksListWan{{ w.wan_id }}'
+        ).value = j.text;
+    }
+
+    {
+        const r = await fetch('/api/copy-http/{{ w.wan_id }}');
+        const j = await r.json();
+        document.getElementById(
+            'httpListWan{{ w.wan_id }}'
+        ).value = j.text;
+    }
+
+    {% endfor %}
+}
+
+async function copyText(text) {
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch (e) {
+    }
+
+    const temp = document.createElement('textarea');
+    temp.value = text;
+    temp.style.position = 'fixed';
+    temp.style.left = '-9999px';
+    temp.style.top = '-9999px';
+
+    document.body.appendChild(temp);
+
+    temp.focus();
+    temp.select();
+
+    const ok = document.execCommand('copy');
+
+    document.body.removeChild(temp);
+
+    return ok;
+}
+
+async function copySocksWan(wanId) {
+    const r = await fetch('/api/copy-socks/' + wanId);
+    const j = await r.json();
+
+    document.getElementById(
+        'socksListWan' + wanId
+    ).value = j.text;
+
+    await copyText(j.text);
+}
+
+
+async function copyHttpWan(wanId) {
+    const r = await fetch('/api/copy-http/' + wanId);
+    const j = await r.json();
+
+    document.getElementById(
+        'httpListWan' + wanId
+    ).value = j.text;
+    await copyText(j.text);
+
+}
+
+
+async function copySocksAll() {
+    const r = await fetch('/api/copy-socks');
+    const j = await r.json();
+    await copyText(j.text);
+}
+
+
+async function copyHttpAll() {
+    const r = await fetch('/api/copy-http');
+    const j = await r.json();
+    await copyText(j.text);
+}
+
+let statusTimer = null;
+
+function renderPppoeState(state) {
+    if (state === 'connected') {
+        return '<span class="status online">connected</span>';
+    }
+
+    if (state === 'connecting') {
+        return '<span class="status connecting">connecting</span>';
+    }
+
+    if (state === 'failed') {
+        return '<span class="status offline">failed</span>';
+    }
+
+    return '<span class="status offline">stopped</span>';
+}
+
+
+async function refreshProxyStatus() {
+    try {
+        const r = await fetch('/api/status', {
+            cache: 'no-store'
+        });
+
+        const list = await r.json();
+
+        let hasConnecting = false;
+
+        for (const p of list) {
+            const status = document.getElementById('status-' + p.id);
+            const pppoe = document.getElementById('pppoe-' + p.id);
+            const ip = document.getElementById('ip-' + p.id);
+            const socks = document.getElementById('socks-' + p.id);
+            const http = document.getElementById('http-' + p.id);
+
+            const proxyForm =
+    document.getElementById('proxy-form-' + p.id);
+
+const proxyButton =
+    document.getElementById('proxy-button-' + p.id);
+
+            if (status) {
+                status.textContent = p.state;
+                status.className =
+                    'status ' + (p.state === 'online' ? 'online' : 'offline');
+            }
+
+            if (pppoe) {
+                pppoe.innerHTML = renderPppoeState(p.pppoe_state);
+            }
+
+            if (ip) {
+                ip.textContent = p.ip || '-';
+            }
+
+            if (socks) {
+                socks.textContent =
+                    p.ip ? p.ip + ':' + p.socks_port : '-';
+            }
+
+            if (http) {
+                http.textContent =
+                    p.ip ? p.ip + ':' + p.http_port : '-';
+            }
+
+            if (proxyForm && proxyButton) {
+    if (p.proxy_enabled === 'yes') {
+        proxyButton.textContent = 'Proxy OFF';
+        proxyForm.action =
+            '/action/' + p.id + '/proxy-disable';
+    } else {
+        proxyButton.textContent = 'Proxy ON';
+        proxyForm.action =
+            '/action/' + p.id + '/proxy-enable';
+    }
+}
+
+            if (p.pppoe_state === 'connecting') {
+                hasConnecting = true;
+            }
+        }
+
+	await refreshWanStatus();
+
+        clearTimeout(statusTimer);
+
+        statusTimer = setTimeout(
+            refreshProxyStatus,
+            hasConnecting ? 2000 : 5000
+        );
+
+    } catch (e) {
+        clearTimeout(statusTimer);
+        statusTimer = setTimeout(refreshProxyStatus, 5000);
+    }
+}
+
+loadWanLists();
+loadWanEditInterfaces();
+refreshProxyStatus();
+
+
+
+</script>
+</body>
+</html>

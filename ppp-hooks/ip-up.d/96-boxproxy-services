@@ -1,0 +1,25 @@
+#!/bin/sh
+
+IFACE="$1"
+
+for CONF in /etc/boxproxy/instances/*.conf; do
+    [ -f "$CONF" ] || continue
+
+    . "$CONF"
+
+if [ "$PPP_IF" = "$IFACE" ]; then
+    ID=$(basename "$CONF" .conf)
+
+    if [ "${PROXY_ENABLED:-yes}" = "yes" ]; then
+        /bin/systemctl start "boxproxy-dante@${ID}.service" >/dev/null 2>&1 || true
+        /bin/systemctl start "boxproxy-squid@${ID}.service" >/dev/null 2>&1 || true
+    else
+        /bin/systemctl stop "boxproxy-dante@${ID}.service" >/dev/null 2>&1 || true
+        /bin/systemctl stop "boxproxy-squid@${ID}.service" >/dev/null 2>&1 || true
+    fi
+
+    exit 0
+fi
+done
+
+exit 0

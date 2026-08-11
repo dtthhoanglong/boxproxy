@@ -1,0 +1,14 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+CONF="/etc/boxproxy/instances/${ID}.conf"
+
+if [ ! -f "$CONF" ]; then
+    echo "Config not found: $CONF"
+    exit 1
+fi
+
+. "$CONF"
+
+exec /usr/sbin/pppd call "$PPPOE_PEER" ifname "$PPP_IF" nodetach

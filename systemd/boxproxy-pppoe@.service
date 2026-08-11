@@ -1,0 +1,13 @@
+[Unit]
+Description=BoxProxy PPPoE %i
+Requires=boxproxy-macvlan@%i.service
+After=boxproxy-macvlan@%i.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/boxproxy/pppoe-run %i
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

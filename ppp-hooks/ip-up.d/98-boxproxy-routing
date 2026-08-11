@@ -1,0 +1,17 @@
+#!/bin/sh
+
+IFACE="$1"
+
+for CONF in /etc/boxproxy/instances/*.conf; do
+    [ -f "$CONF" ] || continue
+
+    . "$CONF"
+
+    if [ "$PPP_IF" = "$IFACE" ]; then
+        ID=$(basename "$CONF" .conf)
+        /usr/local/lib/boxproxy/routing-up "$ID"
+        exit 0
+    fi
+done
+
+exit 0

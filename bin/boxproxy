@@ -1,0 +1,1428 @@
+#!/bin/bash
+set -e
+
+ACTION="$1"
+ID="$2"
+ARG3="$3"
+ARG4="$4"
+ARG5="$5"
+
+if [ -z "$ACTION" ]; then
+    echo "Usage: boxproxy {start|stop|restart|change-mac|change-password|status|set-count|list|copy-socks|copy-http|web-json} <id/count>"
+    exit 1
+fi
+
+    case "$ACTION" in
+	list|copy-socks|copy-http|web-json|wan-json|free-interfaces|client-json|client-ip-json)
+        ;;
+
+    *)
+        if [ -z "$ID" ]; then
+            echo "Missing proxy ID/count"
+            exit 1
+        fi
+        ;;
+esac
+
+CONF="/etc/boxproxy/instances/${ID}.conf"
+
+# Các lệnh thao tác trên một proxy cụ thể yêu cầu instance phải tồn tại.
+# set-count thì không, vì nó có nhiệm vụ tạo instance mới.
+if [[ "$ACTION" != "set-count" &&
+      "$ACTION" != "list" &&
+      "$ACTION" != "copy-socks" &&
+      "$ACTION" != "copy-http" &&
+      "$ACTION" != "web-json" &&
+      "$ACTION" != "wan-json" &&
+      "$ACTION" != "free-interfaces" &&
+      "$ACTION" != "client-json" &&
+      "$ACTION" != "client-assign" &&
+      "$ACTION" != "client-remove" &&
+      "$ACTION" != "client-ip-json" &&
+      "$ACTION" != "client-ip-assign" &&
+      "$ACTION" != "client-ip-remove" &&
+      "$ACTION" != "wan-add" &&
+      "$ACTION" != "wan-save" &&
+      "$ACTION" != "wan-delete" &&
+      "$ACTION" != "wan-proxy-enable" &&
+      "$ACTION" != "wan-proxy-disable" ]] &&
+   [ ! -f "$CONF" ]; then
+    echo "Proxy instance $ID does not exist"
+    exit 1
+fi
+
+case "$ACTION" in
+
+    start)
+    . "$CONF"
+
+    echo "Starting Proxy $ID..."
+
+    systemctl stop "boxproxy-dante@${ID}.service" 2>/dev/null || true
+    systemctl stop "boxproxy-squid@${ID}.service" 2>/dev/null || true
+
+    systemctl start "boxproxy-macvlan@${ID}.service"
+    systemctl reset-failed "boxproxy-pppoe@${ID}.service" 2>/dev/null || true
+    systemctl start "boxproxy-pppoe@${ID}.service"
+
+    PPP_IP=$(ip -4 -o addr show dev "$PPP_IF" 2>/dev/null \
+        | awk '{print $4}' \
+        | cut -d/ -f1 \
+        | head -n1)
+
+    if [ -n "$PPP_IP" ]; then
+        echo "PPPoE $ID online: $PPP_IP"
+    else
+        echo "PPPoE $ID is connecting in background"
+    fi
+
+    echo "Proxy $ID start requested"
+    ;;
+
+    stop)
+    systemctl stop "boxproxy-dante@${ID}.service" || true
+    systemctl stop "boxproxy-squid@${ID}.service" || true
+    systemctl stop "boxproxy-pppoe@${ID}.service" || true
+    systemctl stop "boxproxy-macvlan@${ID}.service" || true
+
+    systemctl reset-failed "boxproxy-pppoe@${ID}.service" 2>/dev/null || true
+    systemctl reset-failed "boxproxy-dante@${ID}.service" 2>/dev/null || true
+    systemctl reset-failed "boxproxy-squid@${ID}.service" 2>/dev/null || true
+    systemctl reset-failed "boxproxy-macvlan@${ID}.service" 2>/dev/null || true
+
+    echo "Proxy $ID stopped"
+    ;;
+
+    restart)
+    echo "Restarting Proxy $ID..."
+
+    "$0" stop "$ID"
+    sleep 1
+    "$0" start "$ID"
+
+    echo "Proxy $ID restart requested"
+    ;;
+
+
+change-mac)
+    . "$CONF"
+
+    OLD_MAC="$MAC"
+
+    # Sinh một MAC mới, không trùng với các proxy hiện có
+    while true; do
+        NEW_MAC=$(printf 'e0:f5:16:%02x:%02x:%02x\n' \
+            $((RANDOM % 256)) \
+            $((RANDOM % 256)) \
+            $((RANDOM % 256)))
+
+        if ! grep -Rqi "^MAC=\"$NEW_MAC\"$" \
+            /etc/boxproxy/instances/*.conf 2>/dev/null; then
+            break
+        fi
+    done
+
+    echo "Old MAC: $OLD_MAC"
+    echo "New MAC: $NEW_MAC"
+
+    "$0" stop "$ID"
+
+    # Giữ MAC mới, không rollback
+    sed -i "s/^MAC=.*/MAC=\"$NEW_MAC\"/" "$CONF"
+
+    # Start các service lại nhưng không bắt Change MAC
+    # phải chờ PPPoE online mới được coi là đổi MAC thành công.
+    systemctl start "boxproxy-macvlan@${ID}.service"
+    systemctl reset-failed "boxproxy-pppoe@${ID}.service" 2>/dev/null || true
+    systemctl start "boxproxy-pppoe@${ID}.service"
+
+    echo "Proxy $ID MAC changed successfully"
+    echo "PPPoE is reconnecting in background"
+    ;;
+
+        set-count)
+    TARGET_WAN="$ID"
+    TARGET="$ARG3"
+
+    if [ -z "$TARGET_WAN" ] || [ -z "$TARGET" ]; then
+        echo "Usage: boxproxy set-count <wan_id> <count>"
+        exit 1
+    fi
+
+    WAN_CONF="/etc/boxproxy/wans/${TARGET_WAN}.conf"
+
+    if [ ! -f "$WAN_CONF" ]; then
+        echo "WAN config not found: $WAN_CONF"
+        exit 1
+    fi
+
+    if ! [[ "$TARGET" =~ ^[0-9]+$ ]] || [ "$TARGET" -lt 1 ]; then
+        echo "Invalid proxy count"
+        exit 1
+    fi
+
+    CURRENT=0
+    WAN_IDS=()
+
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        INSTANCE_ID=$(basename "$CONF" .conf)
+
+        unset WAN_ID
+        . "$CONF"
+
+        if [ "$WAN_ID" = "$TARGET_WAN" ]; then
+            WAN_IDS+=("$INSTANCE_ID")
+            CURRENT=$((CURRENT + 1))
+        fi
+    done
+
+    echo "WAN           : $TARGET_WAN"
+    echo "Current count : $CURRENT"
+    echo "Target count  : $TARGET"
+
+    if [ "$TARGET" -gt "$CURRENT" ]; then
+        TO_CREATE=$((TARGET - CURRENT))
+
+        for _ in $(seq 1 "$TO_CREATE"); do
+            NEW_ID=1
+
+            while [ -f "/etc/boxproxy/instances/${NEW_ID}.conf" ]; do
+                NEW_ID=$((NEW_ID + 1))
+            done
+
+            echo
+            echo "Creating Proxy $NEW_ID on WAN $TARGET_WAN..."
+
+            /usr/local/lib/boxproxy/create-instance \
+                "$NEW_ID" \
+                "$TARGET_WAN"
+
+        systemctl enable "boxproxy-macvlan@${NEW_ID}.service" >/dev/null
+        systemctl enable "boxproxy-pppoe@${NEW_ID}.service" >/dev/null
+
+        systemctl disable "boxproxy-dante@${NEW_ID}.service" >/dev/null 2>&1 || true
+        systemctl disable "boxproxy-squid@${NEW_ID}.service" >/dev/null 2>&1 || true
+
+        "$0" start "$NEW_ID" || true
+    done
+
+    elif [ "$TARGET" -lt "$CURRENT" ]; then
+        TO_DELETE=$((CURRENT - TARGET))
+
+        IFS=$'\n' SORTED_IDS=($(printf '%s\n' "${WAN_IDS[@]}" | sort -nr))
+        unset IFS
+
+        COUNT=0
+
+        for N in "${SORTED_IDS[@]}"; do
+            [ "$COUNT" -ge "$TO_DELETE" ] && break
+
+            echo
+            echo "Deleting Proxy $N from WAN $TARGET_WAN..."
+
+            /usr/local/lib/boxproxy/delete-instance "$N"
+
+            COUNT=$((COUNT + 1))
+        done
+
+    else
+        echo "Proxy count unchanged"
+    fi
+
+    echo
+    echo "WAN $TARGET_WAN proxy count is now $TARGET"
+    ;;
+
+    list)
+    printf "%-5s %-17s %-15s %-8s %-8s %-8s\n" \
+        "ID" "MAC" "IPv4" "SOCKS" "HTTP" "STATE"
+
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        . "$CONF"
+        N=$(basename "$CONF" .conf)
+
+        if ip link show "$PPP_IF" >/dev/null 2>&1; then
+            IP=$(ip -4 -o addr show dev "$PPP_IF" | awk '{print $4}' | cut -d/ -f1)
+            STATE="online"
+        else
+            IP="-"
+            STATE="offline"
+        fi
+
+        printf "%-5s %-17s %-15s %-8s %-8s %-8s\n" \
+            "$N" "$MAC" "$IP" "$SOCKS_PORT" "$HTTP_PORT" "$STATE"
+    done
+    ;;
+
+copy-socks)
+    TARGET_WAN="$ID"
+
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        . "$CONF"
+
+        # Nếu truyền WAN ID thì chỉ lấy proxy thuộc WAN đó
+        if [ -n "$TARGET_WAN" ] && [ "$WAN_ID" != "$TARGET_WAN" ]; then
+            continue
+        fi
+
+        # Chỉ liệt kê proxy đang bật
+        if [ "${PROXY_ENABLED:-yes}" != "yes" ]; then
+            continue
+        fi
+
+        if ip link show "$PPP_IF" >/dev/null 2>&1; then
+            IP=$(ip -4 -o addr show dev "$PPP_IF" \
+                | awk '{print $4}' \
+                | cut -d/ -f1)
+
+            [ -n "$IP" ] && \
+                echo "${IP}:${SOCKS_PORT}:${PROXY_USER}:${PROXY_PASSWORD}"
+        fi
+    done
+    ;;
+
+copy-http)
+    TARGET_WAN="$ID"
+
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        . "$CONF"
+
+        # Nếu truyền WAN ID thì chỉ lấy proxy thuộc WAN đó
+        if [ -n "$TARGET_WAN" ] && [ "$WAN_ID" != "$TARGET_WAN" ]; then
+            continue
+        fi
+
+        # Chỉ liệt kê proxy đang bật
+        if [ "${PROXY_ENABLED:-yes}" != "yes" ]; then
+            continue
+        fi
+
+        if ip link show "$PPP_IF" >/dev/null 2>&1; then
+            IP=$(ip -4 -o addr show dev "$PPP_IF" \
+                | awk '{print $4}' \
+                | cut -d/ -f1)
+
+            [ -n "$IP" ] && \
+                echo "${IP}:${HTTP_PORT}:${PROXY_USER}:${PROXY_PASSWORD}"
+        fi
+    done
+    ;;
+
+    change-password)
+    . "$CONF"
+
+    NEW_PASS=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 10)
+
+if [ ${#NEW_PASS} -ne 10 ]; then
+    echo "Failed to generate password"
+    exit 1
+fi
+
+echo "New password for ${PROXY_USER}: $NEW_PASS"
+
+    # Update Linux/PAM password used by Dante
+    echo "${PROXY_USER}:${NEW_PASS}" | chpasswd
+
+    # Update Squid password
+    htpasswd -b /etc/squid/passwd \
+        "$PROXY_USER" \
+        "$NEW_PASS" >/dev/null
+	    # Save new password to instance config
+    if grep -q '^PROXY_PASSWORD=' "$CONF"; then
+        sed -i "s/^PROXY_PASSWORD=.*/PROXY_PASSWORD=\"$NEW_PASS\"/" "$CONF"
+    else
+        echo "PROXY_PASSWORD=\"$NEW_PASS\"" >> "$CONF"
+    fi
+
+    # Chỉ restart proxy services nếu Proxy đang ON và PPPoE đã có IPv4
+    PPP_IP=$(ip -4 -o addr show dev "$PPP_IF" 2>/dev/null \
+        | awk '{print $4}' \
+        | cut -d/ -f1 \
+        | head -n1)
+
+    if [ "${PROXY_ENABLED:-yes}" = "yes" ] && [ -n "$PPP_IP" ]; then
+        systemctl restart "boxproxy-dante@${ID}.service"
+        systemctl restart "boxproxy-squid@${ID}.service"
+    else
+        systemctl stop "boxproxy-dante@${ID}.service" 2>/dev/null || true
+        systemctl stop "boxproxy-squid@${ID}.service" 2>/dev/null || true
+    fi
+
+    echo "Password for Proxy $ID changed successfully"
+    ;;
+
+    proxy-enable)
+    . "$CONF"
+
+    if grep -q '^PROXY_ENABLED=' "$CONF"; then
+        sed -i 's/^PROXY_ENABLED=.*/PROXY_ENABLED="yes"/' "$CONF"
+    else
+        echo 'PROXY_ENABLED="yes"' >> "$CONF"
+    fi
+
+    # Có ít nhất một proxy ON trong WAN này
+    # => trạng thái mặc định của WAN phải là ON
+    WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
+
+    if [ -f "$WAN_CONF" ]; then
+        if grep -q '^WAN_PROXY_ENABLED=' "$WAN_CONF"; then
+            sed -i 's/^WAN_PROXY_ENABLED=.*/WAN_PROXY_ENABLED="yes"/' "$WAN_CONF"
+        else
+            echo 'WAN_PROXY_ENABLED="yes"' >> "$WAN_CONF"
+        fi
+    fi
+
+    if ip -4 -o addr show dev "$PPP_IF" >/dev/null 2>&1; then
+        systemctl start "boxproxy-dante@${ID}.service"
+        systemctl start "boxproxy-squid@${ID}.service"
+    fi
+
+    echo "Proxy services enabled for session $ID"
+    ;;
+
+    proxy-disable)
+    . "$CONF"
+
+    if grep -q '^PROXY_ENABLED=' "$CONF"; then
+        sed -i 's/^PROXY_ENABLED=.*/PROXY_ENABLED="no"/' "$CONF"
+    else
+        echo 'PROXY_ENABLED="no"' >> "$CONF"
+    fi
+
+    systemctl stop "boxproxy-dante@${ID}.service" 2>/dev/null || true
+    systemctl stop "boxproxy-squid@${ID}.service" 2>/dev/null || true
+
+    # Kiểm tra xem WAN này còn proxy nào ON hay không
+    ANY_ENABLED="no"
+
+    for OTHER_CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$OTHER_CONF" ] || continue
+
+        OTHER_WAN=$(grep '^WAN_ID=' "$OTHER_CONF" \
+            | cut -d= -f2 \
+            | tr -d '"')
+
+        [ "$OTHER_WAN" = "$WAN_ID" ] || continue
+
+        OTHER_ENABLED=$(grep '^PROXY_ENABLED=' "$OTHER_CONF" \
+            | cut -d= -f2 \
+            | tr -d '"')
+
+        if [ "${OTHER_ENABLED:-yes}" = "yes" ]; then
+            ANY_ENABLED="yes"
+            break
+        fi
+    done
+
+    WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
+
+    if [ -f "$WAN_CONF" ]; then
+        if grep -q '^WAN_PROXY_ENABLED=' "$WAN_CONF"; then
+            sed -i "s/^WAN_PROXY_ENABLED=.*/WAN_PROXY_ENABLED=\"${ANY_ENABLED}\"/" "$WAN_CONF"
+        else
+            echo "WAN_PROXY_ENABLED=\"${ANY_ENABLED}\"" >> "$WAN_CONF"
+        fi
+    fi
+
+    echo "Proxy services disabled for session $ID"
+    ;;
+
+    web-json)
+    echo "["
+
+    FIRST=1
+
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        . "$CONF"
+        N=$(basename "$CONF" .conf)
+
+        if ip link show "$PPP_IF" >/dev/null 2>&1; then
+            IP=$(ip -4 -o addr show dev "$PPP_IF" | awk '{print $4}' | cut -d/ -f1)
+            STATE="online"
+        else
+            IP=""
+            STATE="offline"
+        fi
+
+        MACVLAN_STATE=$(systemctl is-active "boxproxy-macvlan@${N}.service" 2>/dev/null || true)
+        PPPOE_STATE=$(systemctl is-active "boxproxy-pppoe@${N}.service" 2>/dev/null || true)
+        DANTE_STATE=$(systemctl is-active "boxproxy-dante@${N}.service" 2>/dev/null || true)
+        SQUID_STATE=$(systemctl is-active "boxproxy-squid@${N}.service" 2>/dev/null || true)
+        if [ -n "$IP" ]; then
+    PPPOE_PROGRESS="connected"
+elif [ "$PPPOE_STATE" = "active" ]; then
+    PPPOE_PROGRESS="connecting"
+elif [ "$PPPOE_STATE" = "failed" ]; then
+    PPPOE_PROGRESS="failed"
+else
+    PPPOE_PROGRESS="stopped"
+fi
+
+        if [ "$FIRST" -eq 0 ]; then
+            echo ","
+        fi
+
+        FIRST=0
+
+printf '  {"id":%s,"wan_id":%s,"mac":"%s","ppp_if":"%s","ip":"%s","state":"%s","pppoe_state":"%s","socks_port":%s,"http_port":%s,"user":"%s","proxy_enabled":"%s","macvlan_service":"%s","pppoe_service":"%s","socks_service":"%s","http_service":"%s"}' \
+            "$N" \
+            "$WAN_ID" \
+            "$MAC" \
+            "$PPP_IF" \
+            "$IP" \
+            "$STATE" \
+	    "$PPPOE_PROGRESS" \
+            "$SOCKS_PORT" \
+            "$HTTP_PORT" \
+            "$PROXY_USER" \
+	    "${PROXY_ENABLED:-yes}" \
+            "$MACVLAN_STATE" \
+            "$PPPOE_STATE" \
+            "$DANTE_STATE" \
+            "$SQUID_STATE"
+    done
+
+    echo
+    echo "]"
+    ;;
+
+wan-proxy-enable)
+    TARGET_WAN="$ID"
+
+    WAN_CONF="/etc/boxproxy/wans/${TARGET_WAN}.conf"
+
+if grep -q '^WAN_PROXY_ENABLED=' "$WAN_CONF"; then
+    sed -i 's/^WAN_PROXY_ENABLED=.*/WAN_PROXY_ENABLED="yes"/' "$WAN_CONF"
+else
+    echo 'WAN_PROXY_ENABLED="yes"' >> "$WAN_CONF"
+fi
+
+    if [ -z "$TARGET_WAN" ]; then
+        echo "Usage: boxproxy wan-proxy-enable <wan_id>"
+        exit 1
+    fi
+
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        . "$CONF"
+
+        [ "$WAN_ID" = "$TARGET_WAN" ] || continue
+
+        INSTANCE_ID=$(basename "$CONF" .conf)
+
+        if grep -q '^PROXY_ENABLED=' "$CONF"; then
+            sed -i 's/^PROXY_ENABLED=.*/PROXY_ENABLED="yes"/' "$CONF"
+        else
+            echo 'PROXY_ENABLED="yes"' >> "$CONF"
+        fi
+
+        if ip -4 -o addr show dev "$PPP_IF" >/dev/null 2>&1; then
+            systemctl start "boxproxy-dante@${INSTANCE_ID}.service"
+            systemctl start "boxproxy-squid@${INSTANCE_ID}.service"
+        fi
+    done
+
+    echo "Proxy services enabled for WAN $TARGET_WAN"
+    ;;
+
+wan-proxy-disable)
+    TARGET_WAN="$ID"
+
+    WAN_CONF="/etc/boxproxy/wans/${TARGET_WAN}.conf"
+
+if grep -q '^WAN_PROXY_ENABLED=' "$WAN_CONF"; then
+    sed -i 's/^WAN_PROXY_ENABLED=.*/WAN_PROXY_ENABLED="no"/' "$WAN_CONF"
+else
+    echo 'WAN_PROXY_ENABLED="no"' >> "$WAN_CONF"
+fi
+
+    if [ -z "$TARGET_WAN" ]; then
+        echo "Usage: boxproxy wan-proxy-disable <wan_id>"
+        exit 1
+    fi
+
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        . "$CONF"
+
+        [ "$WAN_ID" = "$TARGET_WAN" ] || continue
+
+        INSTANCE_ID=$(basename "$CONF" .conf)
+
+        if grep -q '^PROXY_ENABLED=' "$CONF"; then
+            sed -i 's/^PROXY_ENABLED=.*/PROXY_ENABLED="no"/' "$CONF"
+        else
+            echo 'PROXY_ENABLED="no"' >> "$CONF"
+        fi
+
+        systemctl stop "boxproxy-dante@${INSTANCE_ID}.service" 2>/dev/null || true
+        systemctl stop "boxproxy-squid@${INSTANCE_ID}.service" 2>/dev/null || true
+    done
+
+    echo "Proxy services disabled for WAN $TARGET_WAN"
+    ;;
+
+wan-delete)
+    TARGET_WAN="$ID"
+
+    if [ -z "$TARGET_WAN" ]; then
+        echo "Usage: boxproxy wan-delete <wan_id>"
+        exit 1
+    fi
+
+    WAN_CONF="/etc/boxproxy/wans/${TARGET_WAN}.conf"
+
+    if [ ! -f "$WAN_CONF" ]; then
+        echo "WAN $TARGET_WAN does not exist"
+        exit 1
+    fi
+
+    echo "Deleting WAN $TARGET_WAN..."
+
+    INSTANCE_IDS=()
+
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        INSTANCE_WAN=$(grep '^WAN_ID=' "$CONF" \
+            | cut -d= -f2 \
+            | tr -d '"')
+
+        if [ "$INSTANCE_WAN" = "$TARGET_WAN" ]; then
+            INSTANCE_ID=$(basename "$CONF" .conf)
+            INSTANCE_IDS+=("$INSTANCE_ID")
+        fi
+    done
+
+    for INSTANCE_ID in "${INSTANCE_IDS[@]}"; do
+        echo "Deleting Proxy $INSTANCE_ID from WAN $TARGET_WAN..."
+
+        /usr/local/lib/boxproxy/delete-instance "$INSTANCE_ID"
+    done
+
+    rm -f "$WAN_CONF"
+
+    /usr/local/lib/boxproxy/sync-pppoe-secrets
+
+    echo "WAN $TARGET_WAN deleted"
+    ;;
+
+free-interfaces)
+    . /etc/boxproxy/settings.conf
+
+    echo "["
+
+    FIRST=1
+
+    for PATH_IF in /sys/class/net/*; do
+        IFACE=$(basename "$PATH_IF")
+
+        # Bỏ loopback
+        [ "$IFACE" = "lo" ] && continue
+
+        # Chỉ lấy NIC thật / NIC do hypervisor cung cấp
+        [ -e "$PATH_IF/device" ] || continue
+
+        # Bỏ LAN
+        [ "$IFACE" = "$LAN_IF" ] && continue
+
+        # Bỏ interface đã được dùng làm WAN
+        USED=0
+
+        for WAN_CONF in /etc/boxproxy/wans/*.conf; do
+            [ -f "$WAN_CONF" ] || continue
+
+            USED_IF=$(grep '^PARENT_IF=' "$WAN_CONF" \
+                | cut -d= -f2 \
+                | tr -d '"')
+
+            if [ "$USED_IF" = "$IFACE" ]; then
+                USED=1
+                break
+            fi
+        done
+
+        [ "$USED" -eq 1 ] && continue
+
+        MAC=$(cat "/sys/class/net/${IFACE}/address" 2>/dev/null || echo "")
+        OPERSTATE=$(cat "/sys/class/net/${IFACE}/operstate" 2>/dev/null || echo "unknown")
+
+        if [ -r "/sys/class/net/${IFACE}/carrier" ]; then
+            CARRIER=$(cat "/sys/class/net/${IFACE}/carrier" 2>/dev/null || echo "0")
+        else
+            CARRIER=0
+        fi
+
+        if [ "$FIRST" -eq 0 ]; then
+            echo ","
+        fi
+
+        FIRST=0
+
+        printf '  {"interface":"%s","mac":"%s","state":"%s","carrier":%s}' \
+            "$IFACE" \
+            "$MAC" \
+            "$OPERSTATE" \
+            "$CARRIER"
+    done
+
+    echo
+    echo "]"
+    ;;
+
+wan-add)
+    NEW_IF="$ID"
+    NEW_USER="$ARG3"
+    NEW_PASS="$ARG4"
+
+    if [ -z "$NEW_IF" ] || [ -z "$NEW_USER" ] || [ -z "$NEW_PASS" ]; then
+        echo "Usage: boxproxy wan-add <interface> <user> <password>"
+        exit 1
+    fi
+
+    if [ ! -d "/sys/class/net/$NEW_IF" ]; then
+        echo "Interface not found: $NEW_IF"
+        exit 1
+    fi
+
+    # Bring selected WAN interface up automatically
+if ! ip link set dev "$NEW_IF" up; then
+    echo "Failed to bring interface $NEW_IF up"
+    exit 1
+fi
+
+    . /etc/boxproxy/settings.conf
+
+    if [ "$NEW_IF" = "$LAN_IF" ]; then
+        echo "Interface $NEW_IF is LAN and cannot be used as WAN"
+        exit 1
+    fi
+
+    for WAN_CONF in /etc/boxproxy/wans/*.conf; do
+        [ -f "$WAN_CONF" ] || continue
+
+        USED_IF=$(grep '^PARENT_IF=' "$WAN_CONF" | cut -d= -f2 | tr -d '"')
+
+        if [ "$USED_IF" = "$NEW_IF" ]; then
+            echo "Interface $NEW_IF is already used by another WAN"
+            exit 1
+        fi
+    done
+
+    NEW_WAN_ID=1
+
+    while [ -f "/etc/boxproxy/wans/${NEW_WAN_ID}.conf" ]; do
+        NEW_WAN_ID=$((NEW_WAN_ID + 1))
+    done
+
+    NEW_MAC=$(cat "/sys/class/net/${NEW_IF}/address" 2>/dev/null || echo "")
+
+    WAN_CONF="/etc/boxproxy/wans/${NEW_WAN_ID}.conf"
+
+    cat > "$WAN_CONF" <<EOF
+WAN_ID="$NEW_WAN_ID"
+PARENT_IF="$NEW_IF"
+PARENT_MAC="$NEW_MAC"
+
+PPPOE_USER="$NEW_USER"
+PPPOE_PASSWORD="$NEW_PASS"
+
+WAN_PROXY_ENABLED="yes"
+EOF
+
+    chmod 600 "$WAN_CONF"
+
+    /usr/local/lib/boxproxy/sync-pppoe-secrets
+
+    echo "WAN $NEW_WAN_ID created"
+    echo "Interface : $NEW_IF"
+    echo "MAC       : $NEW_MAC"
+    echo "PPPoE User: $NEW_USER"
+    ;;
+
+  wan-json)
+    echo "["
+
+    FIRST=1
+
+    for WAN_CONF in /etc/boxproxy/wans/*.conf; do
+        [ -f "$WAN_CONF" ] || continue
+
+        unset WAN_ID
+        unset PARENT_IF
+        unset PPPOE_USER
+        unset WAN_PROXY_ENABLED
+
+	. "$WAN_CONF"
+
+COUNT=0
+ANY_PROXY_ENABLED="no"
+
+for CONF in /etc/boxproxy/instances/*.conf; do
+
+            [ -f "$CONF" ] || continue
+
+	INSTANCE_WAN=$(grep '^WAN_ID=' "$CONF" | cut -d= -f2 | tr -d '"')
+
+if [ "$INSTANCE_WAN" = "$WAN_ID" ]; then
+    COUNT=$((COUNT + 1))
+
+    INSTANCE_PROXY_ENABLED=$(grep '^PROXY_ENABLED=' "$CONF" \
+        | cut -d= -f2 \
+        | tr -d '"')
+
+    if [ "${INSTANCE_PROXY_ENABLED:-yes}" = "yes" ]; then
+        ANY_PROXY_ENABLED="yes"
+    fi
+fi
+done
+
+        if [ "$FIRST" -eq 0 ]; then
+            echo ","
+        fi
+
+        FIRST=0
+
+printf '  {"wan_id":%s,"interface":"%s","pppoe_user":"%s","proxy_count":%s,"proxy_enabled":"%s"}' \
+    "$WAN_ID" \
+    "$PARENT_IF" \
+    "$PPPOE_USER" \
+    "$COUNT" \
+    "$ANY_PROXY_ENABLED"
+
+    done
+
+    echo
+    echo "]"
+    ;;
+
+    wan-save)
+    WAN_ID="$ID"
+    NEW_IF="$ARG3"
+    NEW_USER="$ARG4"
+    NEW_PASS="$ARG5"
+
+    if [ -z "$WAN_ID" ] || [ -z "$NEW_IF" ] || [ -z "$NEW_USER" ]; then
+        echo "Usage: boxproxy wan-save <wan_id> <interface> <user> [password]"
+        exit 1
+    fi
+
+    WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
+
+    if [ ! -f "$WAN_CONF" ]; then
+        echo "WAN $WAN_ID does not exist"
+        exit 1
+    fi
+
+    # Đọc cấu hình hiện tại
+    unset OLD_IF
+    unset OLD_PASS
+    unset WAN_PROXY_ENABLED
+
+    . "$WAN_CONF"
+
+    OLD_IF="$PARENT_IF"
+    OLD_PASS="$PPPOE_PASSWORD"
+    OLD_PROXY_STATE="${WAN_PROXY_ENABLED:-yes}"
+
+    # Interface mới phải tồn tại
+    if [ ! -d "/sys/class/net/$NEW_IF" ]; then
+        echo "Interface not found: $NEW_IF"
+        exit 1
+    fi
+
+    . /etc/boxproxy/settings.conf
+
+    # Không cho dùng LAN làm WAN
+    if [ "$NEW_IF" = "$LAN_IF" ]; then
+        echo "Interface $NEW_IF is LAN and cannot be used as WAN"
+        exit 1
+    fi
+
+    # Không cho lấy interface của WAN khác
+    for OTHER_CONF in /etc/boxproxy/wans/*.conf; do
+        [ -f "$OTHER_CONF" ] || continue
+        [ "$OTHER_CONF" = "$WAN_CONF" ] && continue
+
+        USED_IF=$(grep '^PARENT_IF=' "$OTHER_CONF" \
+            | cut -d= -f2 | tr -d '"')
+
+        if [ "$USED_IF" = "$NEW_IF" ]; then
+            echo "Interface $NEW_IF is already used by another WAN"
+            exit 1
+        fi
+    done
+
+    # Password để trống = giữ password cũ
+    if [ -z "$NEW_PASS" ]; then
+        NEW_PASS="$OLD_PASS"
+    fi
+
+    ip link set dev "$NEW_IF" up
+
+    NEW_MAC=$(cat "/sys/class/net/${NEW_IF}/address" 2>/dev/null || echo "")
+
+    cat > "$WAN_CONF" <<EOF
+WAN_ID="$WAN_ID"
+PARENT_IF="$NEW_IF"
+PARENT_MAC="$NEW_MAC"
+
+PPPOE_USER="$NEW_USER"
+PPPOE_PASSWORD="$NEW_PASS"
+
+WAN_PROXY_ENABLED="$OLD_PROXY_STATE"
+EOF
+
+    chmod 600 "$WAN_CONF"
+
+    /usr/local/lib/boxproxy/sync-pppoe-secrets
+
+    # Cập nhật username cho tất cả PPPoE peer thuộc WAN này
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        INSTANCE_WAN=$(grep '^WAN_ID=' "$CONF" \
+            | cut -d= -f2 | tr -d '"')
+
+        [ "$INSTANCE_WAN" = "$WAN_ID" ] || continue
+
+        INSTANCE_ID=$(basename "$CONF" .conf)
+        NN=$(printf '%02d' "$INSTANCE_ID")
+        PEER="/etc/ppp/peers/pppoe${NN}"
+
+        if [ -f "$PEER" ]; then
+            sed -i "s/^user .*/user \"$NEW_USER\"/" "$PEER"
+        fi
+    done
+
+    echo "WAN $WAN_ID saved"
+    echo "Interface : $NEW_IF"
+    echo "MAC       : $NEW_MAC"
+
+    if [ "$OLD_IF" != "$NEW_IF" ]; then
+        echo "Interface changed from $OLD_IF to $NEW_IF"
+        echo "Restart WAN sessions to apply the new interface"
+    fi
+    ;;
+
+    client-json)
+    . /etc/boxproxy/settings.conf
+
+    echo "["
+
+    FIRST=1
+
+    while read -r NEIGH_IP _ NEIGH_MAC _; do
+        [ -n "$NEIGH_IP" ] || continue
+        [ -n "$NEIGH_MAC" ] || continue
+
+        NEIGH_MAC=$(echo "$NEIGH_MAC" | tr 'A-F' 'a-f')
+
+        MAPPED="false"
+        MAP_INSTANCE_ID=0
+        MAP_WAN_ID=0
+        MAP_PPP_IF=""
+        MAP_ENABLED="no"
+
+        for MAP_CONF in /etc/boxproxy/client-routes/*.conf; do
+            [ -f "$MAP_CONF" ] || continue
+
+            unset MAC
+            unset INSTANCE_ID
+            unset ENABLED
+
+            . "$MAP_CONF"
+
+            MAP_MAC=$(echo "$MAC" | tr 'A-F' 'a-f')
+
+            if [ "$MAP_MAC" = "$NEIGH_MAC" ]; then
+                MAPPED="true"
+                MAP_INSTANCE_ID="${INSTANCE_ID:-0}"
+                MAP_ENABLED="${ENABLED:-yes}"
+
+                INSTANCE_CONF="/etc/boxproxy/instances/${MAP_INSTANCE_ID}.conf"
+
+                if [ -f "$INSTANCE_CONF" ]; then
+                    MAP_WAN_ID=$(grep '^WAN_ID=' "$INSTANCE_CONF" \
+                        | cut -d= -f2 \
+                        | tr -d '"' || true)
+
+                    MAP_PPP_IF=$(grep '^PPP_IF=' "$INSTANCE_CONF" \
+                        | cut -d= -f2 \
+                        | tr -d '"' || true)
+                fi
+
+                break
+            fi
+        done
+
+        [ -n "$MAP_WAN_ID" ] || MAP_WAN_ID=0
+
+        if [ "$FIRST" -eq 0 ]; then
+            echo ","
+        fi
+
+        FIRST=0
+
+        printf '  {"ip":"%s","mac":"%s","mapped":%s,"instance_id":%s,"wan_id":%s,"ppp_if":"%s","enabled":"%s"}' \
+            "$NEIGH_IP" \
+            "$NEIGH_MAC" \
+            "$MAPPED" \
+            "$MAP_INSTANCE_ID" \
+            "$MAP_WAN_ID" \
+            "$MAP_PPP_IF" \
+            "$MAP_ENABLED"
+
+    done < <(
+        ip -4 neigh show dev "$LAN_IF" \
+            | awk '/lladdr/ {print $1, $2, $3, $4}'
+    )
+
+    echo
+    echo "]"
+    ;;
+
+    client-ip-json)
+    RES_FILE="/etc/dhcp/boxproxy-reservations.conf"
+
+    echo "["
+
+    FIRST=1
+
+    if [ -f "$RES_FILE" ]; then
+        while read -r MAC IP; do
+            [ -n "$MAC" ] || continue
+            [ -n "$IP" ] || continue
+
+            LAST_OCTET="${IP##*.}"
+
+            if [ "$FIRST" -eq 0 ]; then
+                echo ","
+            fi
+
+            FIRST=0
+
+            printf '  {"mac":"%s","ip":"%s","last_octet":%s}' \
+                "$MAC" \
+                "$IP" \
+                "$LAST_OCTET"
+
+        done < <(
+            awk '
+                /hardware ethernet/ {
+                    gsub(";", "", $3)
+                    mac=$3
+                }
+                /fixed-address/ {
+                    gsub(";", "", $2)
+                    ip=$2
+                    print mac, ip
+                }
+            ' "$RES_FILE"
+        )
+    fi
+
+    echo
+    echo "]"
+    ;;
+
+client-ip-assign)
+    CLIENT_MAC="$ID"
+    LAST_OCTET="$ARG3"
+
+    if [ -z "$CLIENT_MAC" ] || [ -z "$LAST_OCTET" ]; then
+        echo "Usage: boxproxy client-ip-assign <mac> <101-254>"
+        exit 1
+    fi
+
+    if ! [[ "$CLIENT_MAC" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
+        echo "Invalid MAC address"
+        exit 1
+    fi
+
+    if ! [[ "$LAST_OCTET" =~ ^[0-9]+$ ]] || \
+       [ "$LAST_OCTET" -lt 101 ] || \
+       [ "$LAST_OCTET" -gt 254 ]; then
+        echo "Static LAN IP must be between 101 and 254"
+        exit 1
+    fi
+
+    NORMAL_MAC=$(echo "$CLIENT_MAC" | tr 'A-F' 'a-f')
+    TARGET_IP="10.10.10.${LAST_OCTET}"
+    RES_FILE="/etc/dhcp/boxproxy-reservations.conf"
+
+    touch "$RES_FILE"
+    chmod 600 "$RES_FILE"
+
+    # Check reservation trùng IP với MAC khác
+    EXISTING_MAC_FOR_IP=$(awk -v ip="$TARGET_IP" '
+        /hardware ethernet/ {
+            gsub(";", "", $3)
+            mac=$3
+        }
+        /fixed-address/ {
+            gsub(";", "", $2)
+            if ($2 == ip) {
+                print mac
+                exit
+            }
+        }
+    ' "$RES_FILE")
+
+    if [ -n "$EXISTING_MAC_FOR_IP" ] && \
+       [ "$(echo "$EXISTING_MAC_FOR_IP" | tr 'A-F' 'a-f')" != "$NORMAL_MAC" ]; then
+        echo "LAN IP already assigned to another device"
+        exit 2
+    fi
+
+	# Check ARP/neighbour: IP đang được MAC khác sử dụng thực tế
+. /etc/boxproxy/settings.conf
+
+LIVE_MAC=$(ip neigh show dev "$LAN_IF" \
+    | awk -v ip="$TARGET_IP" '$1 == ip && /lladdr/ {print $3; exit}')
+
+if [ -n "$LIVE_MAC" ] && \
+   [ "$(echo "$LIVE_MAC" | tr 'A-F' 'a-f')" != "$NORMAL_MAC" ]; then
+
+        echo "LAN IP already in use by another device"
+        exit 3
+    fi
+
+    TMP_FILE=$(mktemp)
+
+    # Xóa reservation cũ của chính MAC này trước
+    awk -v target_mac="$NORMAL_MAC" '
+        BEGIN {
+            skip=0
+        }
+
+        /^host / {
+            block=""
+            inblock=1
+        }
+
+        inblock {
+            block = block $0 "\n"
+
+            if ($1 == "hardware" && $2 == "ethernet") {
+                mac=$3
+                gsub(";", "", mac)
+                mac=tolower(mac)
+            }
+
+            if ($0 ~ /^}/) {
+                if (mac != target_mac) {
+                    printf "%s", block
+                }
+
+                block=""
+                inblock=0
+                mac=""
+            }
+
+            next
+        }
+
+        {
+            print
+        }
+    ' "$RES_FILE" > "$TMP_FILE"
+
+    cat >> "$TMP_FILE" <<EOF
+
+host boxproxy-$(echo "$NORMAL_MAC" | tr ':' '-') {
+    hardware ethernet $NORMAL_MAC;
+    fixed-address $TARGET_IP;
+}
+EOF
+
+    mv "$TMP_FILE" "$RES_FILE"
+    chmod 600 "$RES_FILE"
+
+    if ! dhcpd -t -cf /etc/dhcp/dhcpd.conf; then
+        echo "DHCP config validation failed"
+        exit 1
+    fi
+
+    systemctl restart isc-dhcp-server
+
+        # Nếu MAC này đang có PPPoE routing mapping,
+    # cập nhật CLIENT_IP sang static IP mới.
+    ROUTE_CHANGED="no"
+
+    for ROUTE_CONF in /etc/boxproxy/client-routes/*.conf; do
+        [ -f "$ROUTE_CONF" ] || continue
+
+        ROUTE_MAC=$(grep '^MAC=' "$ROUTE_CONF" \
+            | cut -d= -f2- \
+            | tr -d '"' \
+            | tr 'A-F' 'a-f')
+
+        [ "$ROUTE_MAC" = "$NORMAL_MAC" ] || continue
+
+        if grep -q '^CLIENT_IP=' "$ROUTE_CONF"; then
+            sed -i "s/^CLIENT_IP=.*/CLIENT_IP=\"$TARGET_IP\"/" "$ROUTE_CONF"
+        else
+            echo "CLIENT_IP=\"$TARGET_IP\"" >> "$ROUTE_CONF"
+        fi
+
+        ROUTE_CHANGED="yes"
+        break
+    done
+
+    if [ "$ROUTE_CHANGED" = "yes" ]; then
+        /usr/local/lib/boxproxy/client-route-sync
+    fi
+
+    echo "Static LAN IP assigned"
+    echo "MAC : $NORMAL_MAC"
+    echo "IP  : $TARGET_IP"
+
+    ;;
+
+client-ip-remove)
+    CLIENT_MAC="$ID"
+
+    if [ -z "$CLIENT_MAC" ]; then
+        echo "Usage: boxproxy client-ip-remove <mac>"
+        exit 1
+    fi
+
+    if ! [[ "$CLIENT_MAC" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
+        echo "Invalid MAC address"
+        exit 1
+    fi
+
+    NORMAL_MAC=$(echo "$CLIENT_MAC" | tr 'A-F' 'a-f')
+    RES_FILE="/etc/dhcp/boxproxy-reservations.conf"
+
+    [ -f "$RES_FILE" ] || exit 0
+
+    TMP_FILE=$(mktemp)
+
+    awk -v target_mac="$NORMAL_MAC" '
+        BEGIN {
+            skip=0
+        }
+
+        /^host / {
+            block=""
+            inblock=1
+        }
+
+        inblock {
+            block = block $0 "\n"
+
+            if ($1 == "hardware" && $2 == "ethernet") {
+                mac=$3
+                gsub(";", "", mac)
+                mac=tolower(mac)
+            }
+
+            if ($0 ~ /^}/) {
+                if (mac != target_mac) {
+                    printf "%s", block
+                }
+
+                block=""
+                inblock=0
+                mac=""
+            }
+
+            next
+        }
+
+        {
+            print
+        }
+    ' "$RES_FILE" > "$TMP_FILE"
+
+    mv "$TMP_FILE" "$RES_FILE"
+    chmod 600 "$RES_FILE"
+
+    if ! dhcpd -t -cf /etc/dhcp/dhcpd.conf; then
+        echo "DHCP config validation failed"
+        exit 1
+    fi
+
+    systemctl restart isc-dhcp-server
+
+    # Không giữ routing mapping trỏ vào IP tĩnh vừa bị xóa.
+    "$0" client-remove "$NORMAL_MAC" >/dev/null 2>&1 || true
+
+    echo "Static LAN IP removed"
+    echo "MAC : $NORMAL_MAC"
+    ;;
+
+    client-assign)
+    CLIENT_MAC="$ID"
+    CLIENT_IP="$ARG3"
+    TARGET_INSTANCE="$ARG4"
+
+    if [ -z "$CLIENT_MAC" ] || [ -z "$CLIENT_IP" ] || [ -z "$TARGET_INSTANCE" ]; then
+        echo "Usage: boxproxy client-assign <mac> <ip> <proxy_id>"
+        exit 1
+    fi
+
+    if ! [[ "$CLIENT_MAC" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
+        echo "Invalid MAC address"
+        exit 1
+    fi
+
+    if ! [[ "$CLIENT_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "Invalid IPv4 address"
+        exit 1
+    fi
+
+    if ! [[ "$TARGET_INSTANCE" =~ ^[0-9]+$ ]]; then
+        echo "Invalid Proxy ID"
+        exit 1
+    fi
+
+    INSTANCE_CONF="/etc/boxproxy/instances/${TARGET_INSTANCE}.conf"
+
+    if [ ! -f "$INSTANCE_CONF" ]; then
+        echo "Proxy instance $TARGET_INSTANCE does not exist"
+        exit 1
+    fi
+
+    mkdir -p /etc/boxproxy/client-routes
+
+    NORMAL_MAC=$(echo "$CLIENT_MAC" | tr 'A-F' 'a-f')
+
+    MAP_FILE=""
+
+    # Nếu MAC này đã có mapping thì giữ nguyên file hiện tại.
+    for EXISTING in /etc/boxproxy/client-routes/*.conf; do
+        [ -f "$EXISTING" ] || continue
+
+        EXISTING_MAC=$(grep '^MAC=' "$EXISTING" \
+            | cut -d= -f2- \
+            | tr -d '"' \
+            | tr 'A-F' 'a-f')
+
+        if [ "$EXISTING_MAC" = "$NORMAL_MAC" ]; then
+            MAP_FILE="$EXISTING"
+            break
+        fi
+    done
+
+    # MAC mới thì dùng tên file theo MAC.
+    if [ -z "$MAP_FILE" ]; then
+        MAC_NAME=$(echo "$NORMAL_MAC" | tr ':' '-')
+        MAP_FILE="/etc/boxproxy/client-routes/${MAC_NAME}.conf"
+    fi
+
+    cat > "$MAP_FILE" <<EOF
+MAC="$NORMAL_MAC"
+CLIENT_IP="$CLIENT_IP"
+INSTANCE_ID="$TARGET_INSTANCE"
+ENABLED="yes"
+EOF
+
+    chmod 600 "$MAP_FILE"
+
+    /usr/local/lib/boxproxy/client-route-sync
+
+    echo "Client assigned"
+    echo "MAC      : $NORMAL_MAC"
+    echo "IP       : $CLIENT_IP"
+    echo "Proxy ID : $TARGET_INSTANCE"
+    ;;
+
+    client-remove)
+    CLIENT_MAC="$ID"
+
+    if [ -z "$CLIENT_MAC" ]; then
+        echo "Usage: boxproxy client-remove <mac>"
+        exit 1
+    fi
+
+    if ! [[ "$CLIENT_MAC" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
+        echo "Invalid MAC address"
+        exit 1
+    fi
+
+    NORMAL_MAC=$(echo "$CLIENT_MAC" | tr 'A-F' 'a-f')
+
+    FOUND="no"
+
+    for MAP_FILE in /etc/boxproxy/client-routes/*.conf; do
+        [ -f "$MAP_FILE" ] || continue
+
+        EXISTING_MAC=$(grep '^MAC=' "$MAP_FILE" \
+            | cut -d= -f2- \
+            | tr -d '"' \
+            | tr 'A-F' 'a-f')
+
+        if [ "$EXISTING_MAC" = "$NORMAL_MAC" ]; then
+            rm -f "$MAP_FILE"
+            FOUND="yes"
+            break
+        fi
+    done
+
+    if [ "$FOUND" = "no" ]; then
+        echo "Client mapping not found"
+        exit 0
+    fi
+
+    /usr/local/lib/boxproxy/client-route-sync
+
+    echo "Client mapping removed"
+    echo "MAC : $NORMAL_MAC"
+    ;;
+
+    status)
+        . "$CONF"
+
+        echo "Proxy $ID"
+        echo "------------------------"
+        echo "MACVLAN : $MACVLAN_IF"
+        echo "MAC     : $MAC"
+        echo "PPP     : $PPP_IF"
+        echo "SOCKS5  : 10.10.10.1:$SOCKS_PORT"
+        echo "HTTP    : 10.10.10.1:$HTTP_PORT"
+        echo "USER    : $PROXY_USER"
+        echo
+
+        echo -n "MACVLAN service : "
+        systemctl is-active "boxproxy-macvlan@${ID}.service" || true
+
+        echo -n "PPPoE service   : "
+        systemctl is-active "boxproxy-pppoe@${ID}.service" || true
+
+        echo -n "SOCKS5 service  : "
+        systemctl is-active "boxproxy-dante@${ID}.service" || true
+
+        echo -n "HTTP service    : "
+        systemctl is-active "boxproxy-squid@${ID}.service" || true
+
+        echo
+
+        if ip link show "$PPP_IF" >/dev/null 2>&1; then
+            IP=$(ip -4 -o addr show dev "$PPP_IF" | awk '{print $4}' | cut -d/ -f1)
+            echo "IPv4    : ${IP:-none}"
+        else
+            echo "IPv4    : offline"
+        fi
+        ;;
+
+    *)
+        echo "Unknown action: $ACTION"
+        echo "Usage: boxproxy {start|stop|restart|status} <id>"
+        exit 1
+        ;;
+esac

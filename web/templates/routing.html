@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>BoxProxy - LAN Routing</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 16px;
+            background: #f5f5f5;
+        }
+
+        h1, h2 {
+            margin-top: 12px;
+            margin-bottom: 12px;
+        }
+
+        .nav {
+            margin-bottom: 16px;
+        }
+
+        .nav a {
+            display: inline-block;
+            padding: 8px 12px;
+            margin-right: 8px;
+            border: 1px solid #aaa;
+            background: white;
+            text-decoration: none;
+            color: black;
+            border-radius: 4px;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            padding: 14px;
+            margin-bottom: 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        th {
+            font-weight: bold;
+        }
+
+        .mapped {
+            color: green;
+            font-weight: bold;
+        }
+
+        .unmapped {
+            color: #777;
+        }
+    </style>
+</head>
+
+<body>
+
+<h1>BoxProxy</h1>
+
+<div class="nav">
+    <a href="/">Proxy Management</a>
+    <a href="/routing">LAN Routing</a>
+</div>
+
+<h2>LAN Device Routing</h2>
+
+<div class="card">
+
+<div id="messageBox"></div>
+
+<div class="card">
+
+    <table>
+        <thead>
+            <tr>
+                <th>IP Address</th>
+                <th>MAC Address</th>
+		<th>Static LAN IP</th>
+                <th>Route</th>
+		<th>Assign</th>
+            </tr>
+        </thead>
+
+        <tbody id="clientRoutingBody">
+        </tbody>
+    </table>
+
+</div>
+
+<script>
+
+async function loadClientRouting() {
+    try {
+	        const active = document.activeElement;
+
+        if (
+            active &&
+            (
+                active.tagName === 'INPUT' ||
+                active.tagName === 'SELECT'
+            ) &&
+            active.closest('#clientRoutingBody')
+        ) {
+            return;
+        }
+	const r = await fetch('/api/clients', {
+    cache: 'no-store'
+});
+
+const list = await r.json();
+
+const ipResponse = await fetch('/api/client-ips', {
+    cache: 'no-store'
+});
+
+const reservations = await ipResponse.json();
+
+const reservationMap = {};
+
+for (const x of reservations) {
+    reservationMap[x.mac.toLowerCase()] = x;
+}
+
+const body =
+    document.getElementById('clientRoutingBody');
+
+        body.innerHTML = '';
+
+        for (const c of list) {
+            const row = document.createElement('tr');
+	    const staticInfo =
+    reservationMap[c.mac.toLowerCase()] || null;
+
+const staticOctet =
+    staticInfo ? staticInfo.last_octet : '';
+
+            let routeText = 'Not assigned';
+            let routeClass = 'unmapped';
+
+            if (c.mapped) {
+                routeText =
+                    'Proxy #' + c.instance_id +
+                    ' · WAN ' + c.wan_id +
+                    ' · ' + c.ppp_if;
+
+                routeClass = 'mapped';
+            }
+
+let options = `
+    <option value="" ${!c.mapped ? 'selected' : ''}>
+        -- Select Proxy --
+    </option>
+`;
+
+{% for p in proxies %}
+options += `
+    <option value="{{ p.id }}"
+        ${c.mapped && c.instance_id == {{ p.id }} ? 'selected' : ''}>
+        Proxy #{{ p.id }} · WAN {{ p.wan_id }} · {{ p.ppp_if }}
+    </option>
+`;
+{% endfor %}
+
+row.innerHTML = `
+    <td>${c.ip}</td>
+    <td>${c.mac}</td>
+
+    <td>
+        <form method="post"
+              action="/routing/ip-assign"
+              style="display:inline-block;">
+
+            <input type="hidden"
+                   name="mac"
+                   value="${c.mac}">
+
+            <span>10.10.10.</span>
+
+            <input type="number"
+                   name="last_octet"
+                   min="101"
+                   max="254"
+                   value="${staticOctet}"
+                   placeholder="101"
+                   style="width:65px;"
+                   required>
+
+            <button type="submit">
+                Add / Save
+            </button>
+        </form>
+
+        ${staticInfo ? `
+            <form method="post"
+                  action="/routing/ip-remove"
+                  style="display:inline-block;"
+                  onsubmit="return confirm('Delete static LAN IP ${staticInfo.ip}?');">
+
+                <input type="hidden"
+                       name="mac"
+                       value="${c.mac}">
+
+                <button type="submit">
+                    Delete
+                </button>
+            </form>
+        ` : ''}
+    </td>
+
+    <td class="${routeClass}">
+        ${routeText}
+    </td>
+
+        ${routeText}
+    </td>
+
+    <td>
+        <form method="post"
+              action="/routing/assign"
+              style="display:inline-block; margin-right:6px;">
+
+            <input type="hidden"
+                   name="mac"
+                   value="${c.mac}">
+
+            <input type="hidden"
+                   name="ip"
+                   value="${c.ip}">
+
+	    <select name="proxy_id" required>
+    ${options}
+</select>
+
+            <button type="submit">
+                Apply
+            </button>
+        </form>
+
+        ${c.mapped ? `
+            <form method="post"
+                  action="/routing/remove"
+                  style="display:inline-block;"
+                  onsubmit="return confirm('Remove routing for ${c.mac}?');">
+
+                <input type="hidden"
+                       name="mac"
+                       value="${c.mac}">
+
+                <button type="submit">
+                    Remove
+                </button>
+            </form>
+        ` : ''}
+    </td>
+`;
+
+body.appendChild(row);
+
+        }
+
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function showMessage() {
+    const params = new URLSearchParams(window.location.search);
+    const error = params.get('error');
+    const success = params.get('success');
+
+    const box = document.getElementById('messageBox');
+
+    if (!box) {
+        return;
+    }
+
+    if (error === 'ip-conflict') {
+        box.innerHTML =
+            '<div class="card" style="color:red;">' +
+            'Địa chỉ IP LAN bạn vừa chọn đã được gán cho thiết bị khác.' +
+            '</div>';
+    } else if (error === 'invalid-ip') {
+        box.innerHTML =
+            '<div class="card" style="color:red;">' +
+            'IP LAN tĩnh chỉ được chọn từ 101 đến 254.' +
+            '</div>';
+    } else if (error) {
+        box.innerHTML =
+            '<div class="card" style="color:red;">' +
+            'Không thể cập nhật IP LAN tĩnh.' +
+            '</div>';
+    } else if (success === 'ip-saved') {
+        box.innerHTML =
+            '<div class="card" style="color:green;">' +
+            'Đã lưu IP LAN tĩnh.' +
+            '</div>';
+    } else if (success === 'ip-removed') {
+        box.innerHTML =
+            '<div class="card" style="color:green;">' +
+            'Đã xóa và giải phóng IP LAN tĩnh.' +
+            '</div>';
+    }
+}
+
+showMessage();
+
+loadClientRouting();
+
+setInterval(
+    loadClientRouting,
+    5000
+);
+
+</script>
+
+</body>
+</html>

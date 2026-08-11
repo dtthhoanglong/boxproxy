@@ -1,0 +1,68 @@
+#!/bin/bash
+
+CONF="$1"
+
+if [ -z "$CONF" ] || [ ! -f "$CONF" ]; then
+    echo "Usage: client-route-down <config-file>"
+    exit 1
+fi
+
+. "$CONF"
+
+CLIENT_MAC="$MAC"
+
+INSTANCE_CONF="/etc/boxproxy/instances/${INSTANCE_ID}.conf"
+
+if [ ! -f "$INSTANCE_CONF" ]; then
+    exit 0
+fi
+
+. "$INSTANCE_CONF"
+. /etc/boxproxy/settings.conf
+
+TABLE=$((100 + INSTANCE_ID))
+MARK=$((10000 + INSTANCE_ID))
+RULE_PREF=$((2000 + INSTANCE_ID))
+
+# Gỡ MARK rule theo MAC
+iptables -t mangle -D PREROUTING \
+    -i "$LAN_IF" \
+    -m mac --mac-source "$CLIENT_MAC" \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j MARK --set-mark "$MARK" \
+    2>/dev/null || true
+
+# Gỡ fwmark rule
+ip rule del pref "$RULE_PREF" 2>/dev/null || true
+
+# Gỡ NAT
+iptables -t nat -D POSTROUTING \
+    -s "${CLIENT_IP}/32" \
+    -o "$PPP_IF" \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j MASQUERADE \
+    2>/dev/null || true
+
+# Gỡ forward LAN -> PPP
+iptables -D FORWARD \
+    -i "$LAN_IF" \
+    -o "$PPP_IF" \
+    -s "${CLIENT_IP}/32" \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j ACCEPT \
+    2>/dev/null || true
+
+# Gỡ return traffic PPP -> LAN
+iptables -D FORWARD \
+    -i "$PPP_IF" \
+    -o "$LAN_IF" \
+    -d "${CLIENT_IP}/32" \
+    -m conntrack --ctstate ESTABLISHED,RELATED \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j ACCEPT \
+    2>/dev/null || true
+
+echo "Client route disabled:"
+echo "MAC        : $CLIENT_MAC"
+echo "Client IP  : $CLIENT_IP"
+echo "Proxy ID   : $INSTANCE_ID"

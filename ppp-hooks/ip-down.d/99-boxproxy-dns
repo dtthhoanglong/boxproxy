@@ -1,0 +1,7 @@
+#!/bin/sh
+
+IFACE="$1"
+
+/usr/bin/resolvectl revert "$IFACE" 2>/dev/null || true
+
+exit 0

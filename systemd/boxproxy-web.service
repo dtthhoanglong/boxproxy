@@ -1,0 +1,14 @@
+[Unit]
+Description=BoxProxy Web UI
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/boxproxy-web
+ExecStart=/usr/bin/python3 /opt/boxproxy-web/app.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+#!/bin/bash
+
+ID="$1"
+CONF="/etc/boxproxy/instances/${ID}.conf"
+
+[ -f "$CONF" ] || exit 0
+. "$CONF"
+
+TABLE=$((100 + ID))
+
+# Chỉ xóa source-rule động của public IPv4 PPPoE.
+# Không xóa các fwmark rule dành cho LAN client.
+ip rule del pref "$((1000 + ID))" 2>/dev/null || true
+
+# Khi PPPoE down, giữ table ở trạng thái fail-close.
+ip route flush table "$TABLE" 2>/dev/null || true
+ip route add unreachable default metric 42760 table "$TABLE" 2>/dev/null || true
+
+exit 0

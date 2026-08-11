@@ -1,0 +1,138 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+WAN_ID="$2"
+
+if [ -z "$ID" ]; then
+    echo "Usage: create-instance <id>"
+    exit 1
+fi
+
+if ! [[ "$ID" =~ ^[0-9]+$ ]] || [ "$ID" -lt 1 ]; then
+    echo "Invalid proxy ID"
+    exit 1
+fi
+
+if [ -z "$WAN_ID" ]; then
+    echo "Usage: create-instance <id> <wan_id>"
+    exit 1
+fi
+
+WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
+
+if [ ! -f "$WAN_CONF" ]; then
+    echo "WAN config not found: $WAN_CONF"
+    exit 1
+fi
+
+. "$WAN_CONF"
+
+SETTINGS="/etc/boxproxy/settings.conf"
+CONF="/etc/boxproxy/instances/${ID}.conf"
+PEER="/etc/ppp/peers/pppoe$(printf '%02d' "$ID")"
+
+[ -f "$SETTINGS" ] || {
+    echo "Missing $SETTINGS"
+    exit 1
+}
+
+. "$SETTINGS"
+
+if [ -f "$CONF" ]; then
+    echo "Proxy $ID already exists"
+    exit 0
+fi
+
+NN=$(printf '%02d' "$ID")
+
+MACVLAN_IF="mvppp${NN}"
+PPP_IF="ppp${NN}"
+PPPOE_PEER="pppoe${NN}"
+
+SOCKS_PORT=$((SOCKS_BASE_PORT + ID))
+HTTP_PORT=$((HTTP_BASE_PORT + ID))
+
+PROXY_USER="proxy${ID}"
+
+# Sinh MAC không trùng bất kỳ instance nào
+while true; do
+    NEW_MAC=$(printf '%s:%02x:%02x:%02x\n' \
+        "$MAC_PREFIX" \
+        $((RANDOM % 256)) \
+        $((RANDOM % 256)) \
+        $((RANDOM % 256)))
+
+    if ! grep -Rqi "^MAC=\"$NEW_MAC\"$" \
+        /etc/boxproxy/instances/*.conf 2>/dev/null; then
+        break
+    fi
+done
+
+cat > "$CONF" <<EOF
+WAN_ID="$WAN_ID"
+
+MACVLAN_IF="$MACVLAN_IF"
+MAC="$NEW_MAC"
+
+PPPOE_PEER="$PPPOE_PEER"
+PPP_IF="$PPP_IF"
+
+SOCKS_PORT="$SOCKS_PORT"
+HTTP_PORT="$HTTP_PORT"
+
+PROXY_USER="$PROXY_USER"
+PROXY_PASSWORD="$PROXY_PASSWORD"
+PROXY_ENABLED="${WAN_PROXY_ENABLED:-yes}"
+EOF
+
+chmod 600 "$CONF"
+
+# Tạo PPPoE peer theo WAN tương ứng
+cat > "$PEER" <<EOF
+plugin rp-pppoe.so
+mvppp${NN}
+
+user "${PPPOE_USER}"
+
+noauth
+persist
+maxfail 0
+holdoff 5
+
+mtu 1492
+mru 1492
+
+noipdefault
+defaultroute
+replacedefaultroute
+usepeerdns
+
+hide-password
+lcp-echo-interval 10
+lcp-echo-failure 3
+EOF
+
+chmod 600 "$PEER"
+
+# Tạo Linux user cho Dante nếu chưa có
+if ! id "$PROXY_USER" >/dev/null 2>&1; then
+    useradd \
+        --system \
+        --no-create-home \
+        --shell /usr/sbin/nologin \
+        "$PROXY_USER"
+fi
+
+echo "${PROXY_USER}:${PROXY_PASSWORD}" | chpasswd
+
+# Thêm/cập nhật account Squid
+htpasswd -b /etc/squid/passwd \
+    "$PROXY_USER" \
+    "$PROXY_PASSWORD" >/dev/null
+
+echo "Proxy $ID created"
+echo "MAC      : $NEW_MAC"
+echo "SOCKS5   : 10.10.10.1:$SOCKS_PORT"
+echo "HTTP     : 10.10.10.1:$HTTP_PORT"
+echo "Username : $PROXY_USER"

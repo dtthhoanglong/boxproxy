@@ -1,0 +1,50 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+CONF="/etc/boxproxy/instances/${ID}.conf"
+OUT="/etc/boxproxy/squid/${ID}.conf"
+
+[ -f "$CONF" ] || exit 1
+. "$CONF"
+PPP_IP=$(ip -4 -o addr show dev "$PPP_IF" | awk '{print $4}' | cut -d/ -f1)
+
+if [ -z "$PPP_IP" ]; then
+    echo "No IPv4 found on $PPP_IF"
+    exit 1
+fi
+
+
+cat > "$OUT" <<EOF
+http_port 10.10.10.1:${HTTP_PORT}
+tcp_outgoing_address ${PPP_IP}
+
+shutdown_lifetime 1 second
+
+auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/passwd
+auth_param basic realm BoxProxy
+auth_param basic credentialsttl 2 hours
+
+acl authenticated proxy_auth REQUIRED
+
+acl SSL_ports port 443
+acl Safe_ports port 80
+acl Safe_ports port 443
+acl CONNECT method CONNECT
+
+acl management src 10.10.10.0/24
+
+http_access deny !Safe_ports
+http_access deny CONNECT !SSL_ports
+http_access allow management authenticated
+http_access deny all
+
+cache deny all
+forwarded_for delete
+
+pid_filename /run/boxproxy-squid-${ID}.pid
+access_log /var/log/squid/boxproxy-${ID}-access.log
+cache_log /var/log/squid/boxproxy-${ID}-cache.log
+EOF
+
+chmod 600 "$OUT"

@@ -1,0 +1,102 @@
+#!/bin/bash
+set -e
+
+CONF="$1"
+
+if [ -z "$CONF" ] || [ ! -f "$CONF" ]; then
+    echo "Usage: client-route-up <config-file>"
+    exit 1
+fi
+
+. "$CONF"
+
+CLIENT_MAC="$MAC"
+
+if [ "${ENABLED:-yes}" != "yes" ]; then
+    exit 0
+fi
+
+INSTANCE_CONF="/etc/boxproxy/instances/${INSTANCE_ID}.conf"
+
+if [ ! -f "$INSTANCE_CONF" ]; then
+    echo "Proxy instance $INSTANCE_ID does not exist"
+    exit 1
+fi
+
+. "$INSTANCE_CONF"
+
+. /etc/boxproxy/settings.conf
+
+TABLE=$((100 + INSTANCE_ID))
+MARK=$((10000 + INSTANCE_ID))
+RULE_PREF=$((2000 + INSTANCE_ID))
+
+# MARK theo MAC nguồn trên LAN
+iptables -t mangle -C PREROUTING \
+    -i "$LAN_IF" \
+    -m mac --mac-source "$CLIENT_MAC" \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j MARK --set-mark "$MARK" \
+    2>/dev/null || \
+iptables -t mangle -A PREROUTING \
+    -i "$LAN_IF" \
+    -m mac --mac-source "$CLIENT_MAC" \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j MARK --set-mark "$MARK"
+
+# fwmark -> routing table của PPPoE instance
+ip rule del pref "$RULE_PREF" 2>/dev/null || true
+ip rule add fwmark "$MARK" table "$TABLE" priority "$RULE_PREF"
+
+# NAT client qua đúng PPP interface
+iptables -t nat -C POSTROUTING \
+    -s "${CLIENT_IP}/32" \
+    -o "$PPP_IF" \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j MASQUERADE \
+    2>/dev/null || \
+iptables -t nat -A POSTROUTING \
+    -s "${CLIENT_IP}/32" \
+    -o "$PPP_IF" \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j MASQUERADE
+
+# Forward LAN -> PPP
+iptables -C FORWARD \
+    -i "$LAN_IF" \
+    -o "$PPP_IF" \
+    -s "${CLIENT_IP}/32" \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j ACCEPT \
+    2>/dev/null || \
+iptables -A FORWARD \
+    -i "$LAN_IF" \
+    -o "$PPP_IF" \
+    -s "${CLIENT_IP}/32" \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j ACCEPT
+
+# Return traffic PPP -> LAN
+iptables -C FORWARD \
+    -i "$PPP_IF" \
+    -o "$LAN_IF" \
+    -d "${CLIENT_IP}/32" \
+    -m conntrack --ctstate ESTABLISHED,RELATED \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j ACCEPT \
+    2>/dev/null || \
+iptables -A FORWARD \
+    -i "$PPP_IF" \
+    -o "$LAN_IF" \
+    -d "${CLIENT_IP}/32" \
+    -m conntrack --ctstate ESTABLISHED,RELATED \
+    -m comment --comment "BOXPROXY-CLIENT" \
+    -j ACCEPT
+
+echo "Client route enabled:"
+echo "MAC        : $CLIENT_MAC"
+echo "Client IP  : $CLIENT_IP"
+echo "Proxy ID   : $INSTANCE_ID"
+echo "PPP        : $PPP_IF"
+echo "Table      : $TABLE"
+echo "Mark       : $MARK"
