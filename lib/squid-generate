@@ -16,7 +16,9 @@ fi
 
 
 cat > "$OUT" <<EOF
+
 http_port 10.10.10.1:${HTTP_PORT}
+http_port ${PPP_IP}:${HTTP_PORT}
 tcp_outgoing_address ${PPP_IP}
 
 shutdown_lifetime 1 second
@@ -32,11 +34,9 @@ acl Safe_ports port 80
 acl Safe_ports port 443
 acl CONNECT method CONNECT
 
-acl management src 10.10.10.0/24
-
 http_access deny !Safe_ports
 http_access deny CONNECT !SSL_ports
-http_access allow management authenticated
+http_access allow authenticated
 http_access deny all
 
 cache deny all

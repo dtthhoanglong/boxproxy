@@ -33,6 +33,25 @@ iptables -S FORWARD \
         iptables $RULE 2>/dev/null || true
     done
 
+# PPPoE MTU 1492: clamp TCP MSS cho traffic LAN -> PPPoE.
+# Xóa rule cũ trước để client-route-sync chạy nhiều lần không tạo duplicate.
+iptables -t mangle -S FORWARD \
+| grep 'BOXPROXY-MSS' \
+| sed 's/^-A /-D /' \
+| while read -r RULE; do
+    iptables -t mangle $RULE 2>/dev/null || true
+done
+
+LAN_IF="$(ip -o -4 addr show | awk '$4 ~ /^10\.10\.10\.1\// {print $2; exit}')"
+
+if [ -n "$LAN_IF" ]; then
+    iptables -t mangle -A FORWARD \
+        -i "$LAN_IF" -o ppp+ \
+        -p tcp --tcp-flags SYN,RST SYN \
+        -m comment --comment BOXPROXY-MSS \
+        -j TCPMSS --set-mss 1452
+fi
+
 # Apply lại toàn bộ mapping đang enable
 for CONF in "$CONF_DIR"/*.conf; do
     [ -f "$CONF" ] || continue

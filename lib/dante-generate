@@ -8,12 +8,25 @@ OUT="/etc/boxproxy/dante/${ID}.conf"
 [ -f "$CONF" ] || exit 1
 . "$CONF"
 
+PPP_IP=$(ip -4 -o addr show dev "$PPP_IF" \
+    | awk '{print $4}' \
+    | cut -d/ -f1)
+
+if [ -z "$PPP_IP" ]; then
+    echo "No IPv4 found on $PPP_IF"
+    exit 1
+fi
+
 cat > "$OUT" <<EOF
 logoutput: syslog
 
+# Accept SOCKS5 from LAN and from the PPPoE public IP.
 internal: 10.10.10.1 port = ${SOCKS_PORT}
+internal: ${PPP_IP} port = ${SOCKS_PORT}
+
 external: ${PPP_IF}
 
+clientmethod: none
 socksmethod: username
 
 user.privileged: root
@@ -21,12 +34,12 @@ user.notprivileged: nobody
 user.libwrap: nobody
 
 client pass {
-    from: 10.10.10.0/24 to: 0.0.0.0/0
+    from: 0.0.0.0/0 to: 0.0.0.0/0
     log: connect disconnect error
 }
 
 socks pass {
-    from: 10.10.10.0/24 to: 0.0.0.0/0
+    from: 0.0.0.0/0 to: 0.0.0.0/0
     command: connect udpassociate
     socksmethod: username
     log: connect disconnect error
