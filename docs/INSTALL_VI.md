@@ -37,25 +37,21 @@ LAN IP: 10.10.10.1/24
 WebUI: http://10.10.10.1:8080
 ```
 
-Tên interface trên máy thật có thể khác.
-
-Kiểm tra bằng:
-
-```bash
-ip -br link
-```
+Tên interface trên máy thật có thể khác. `install.sh` sẽ tự phát hiện và hiển thị các interface mạng hiện có để người cài chọn WAN/LAN, vì vậy không bắt buộc phải kiểm tra thủ công trước khi chạy installer.
 
 ---
 
 ## 2. Clone BoxProxy từ GitHub
 
+Repository BoxProxy là public. Trên máy BoxProxy mới nên clone bằng HTTPS để không cần cấu hình SSH key GitHub:
+
 ```bash
 cd ~
-git clone git@github.com:dtthhoanglong/boxproxy.git
+git clone https://github.com/dtthhoanglong/boxproxy.git
 cd boxproxy
 ```
 
-Hoặc nếu máy không sử dụng SSH key GitHub, clone bằng HTTPS.
+SSH chỉ cần cấu hình nếu máy này được sử dụng để commit/push code lên GitHub.
 
 ---
 
@@ -128,57 +124,125 @@ cd ~/boxproxy
 sudo bash install.sh
 ```
 
+Installer tự phát hiện và hiển thị các network interface hiện có. Người cài chỉ cần chọn interface dùng làm WAN và LAN khi được hỏi.
+
+Ví dụ:
+
+```text
+Available network interfaces:
+
+  ens33  UP
+  ens34  DOWN
+```
+
+Thông thường trên máy mới, interface đang dùng Internet để cài package là WAN; interface còn lại được chọn làm LAN.
+
 Installer sẽ cài và cấu hình các thành phần cần thiết, bao gồm:
 
-* PPP / PPPoE
-* Dante
-* Squid
-* DHCP server
-* BoxProxy CLI
-* BoxProxy WebUI
-* systemd services
-* PPP hooks
-* routing scripts
-* client MAC routing
-* IPv4 forwarding
-* network configuration cần thiết
+- PPP / PPPoE
+- Dante
+- Squid
+- DHCP server
+- BoxProxy CLI
+- BoxProxy WebUI
+- systemd services
+- PPP hooks
+- routing scripts
+- client MAC routing
+- IPv4 forwarding
+- network configuration cần thiết
 
 Installer cũng kiểm tra syntax các script trước khi hoàn tất.
 
----
+Sau khi installer hoàn tất, cấu hình Netplan đã được tạo nhưng **không được apply trực tiếp** để tránh làm mất phiên SSH đang dùng để cài đặt.
 
-## 6. Squid shutdown chậm
-
-Trong quá trình test thực tế, Squid có thể làm Ubuntu phải chờ khá lâu khi shutdown/reboot nếu sử dụng thời gian shutdown mặc định.
-
-BoxProxy V1 sử dụng:
-
-```text
-shutdown_lifetime 1 second
-```
-
-trong cấu hình Squid được sinh cho từng proxy.
-
-Điều này cho phép Squid kết thúc nhanh khi:
-
-* Stop proxy.
-* Restart PPPoE.
-* Reboot máy.
-* Shutdown máy.
-
-Không nên bỏ dòng này khỏi `lib/squid-generate`.
-
-Kiểm tra một Squid config đang chạy:
+Reboot máy:
 
 ```bash
-grep shutdown_lifetime /etc/boxproxy/squid/*.conf
+sudo reboot
 ```
 
-Kết quả phải có:
+Sau reboot, LAN mặc định phải có địa chỉ:
+
+```text
+10.10.10.1/24
+```
+
+WebUI:
+
+```text
+http://10.10.10.1:8080
+```
+
+Nếu máy quản trị nằm trong LAN BoxProxy, có thể SSH lại bằng:
+
+```bash
+ssh ubuntu@10.10.10.1
+```
+
+Không cần đăng nhập trực tiếp trên console lần đầu để kích hoạt SSH. SSH server và interface LAN được khởi động tự động trong quá trình boot.
+
+---
+
+## 6. Squid và shutdown/reboot
+
+Package `squid` của Ubuntu có service mặc định:
+
+```text
+squid.service
+```
+
+BoxProxy V1 không sử dụng service Squid mặc định này. Mỗi HTTP proxy được quản lý độc lập bằng template service:
+
+```text
+boxproxy-squid@.service
+```
+
+`install.sh` tự động disable và mask `squid.service`. Việc này tránh Squid mặc định tự chạy trên port `3128` và tránh làm shutdown/reboot phải chờ lâu.
+
+Sau khi cài có thể kiểm tra:
+
+```bash
+systemctl is-enabled squid.service
+systemctl is-active squid.service
+```
+
+Kết quả mong muốn:
+
+```text
+masked
+inactive
+```
+
+Cấu hình Squid của từng proxy sử dụng:
 
 ```text
 shutdown_lifetime 1 second
 ```
+
+để từng instance Squid dừng nhanh khi Stop proxy, Restart PPPoE, reboot hoặc shutdown.
+
+Trước khi tạo proxy, `/etc/boxproxy/squid/` có thể chưa có file `.conf`. Khi đó kiểm tra template sinh cấu hình:
+
+```bash
+grep -n 'shutdown_lifetime' \
+    ~/boxproxy/lib/squid-generate \
+    /usr/local/lib/boxproxy/squid-generate
+```
+
+Kết quả phải chứa:
+
+```text
+shutdown_lifetime 1 second
+```
+
+Sau khi đã tạo ít nhất một proxy, có thể kiểm tra config runtime:
+
+```bash
+sudo grep shutdown_lifetime /etc/boxproxy/squid/*.conf
+```
+
+Không nên bỏ `shutdown_lifetime 1 second` khỏi `lib/squid-generate`.
 
 ---
 
@@ -188,10 +252,10 @@ PPPoE sử dụng MTU `1492`, trong khi LAN thông thường sử dụng MTU `15
 
 Trong quá trình test MAC-based client routing, client vẫn có Internet và ping bình thường nhưng:
 
-* Firefox mở trang rất chậm.
-* Download rất chậm.
-* Fast.com không chạy đúng.
-* Speedtest không chạy đúng.
+- Firefox mở trang rất chậm.
+- Download rất chậm.
+- Fast.com không chạy đúng.
+- Speedtest không chạy đúng.
 
 Nguyên nhân là TCP MSS của traffic LAN đi ra PPPoE.
 
@@ -223,19 +287,18 @@ boxproxy-client-routing.service
 
 Không cần thêm rule thủ công sau mỗi reboot.
 
+Lưu ý: ngay sau clean-install, trước khi client routing được áp dụng, rule `BOXPROXY-MSS` có thể chưa xuất hiện trong runtime iptables. Sau khi cấu hình LAN Routing, `client-route-sync` sẽ tạo rule này.
+
 Kiểm tra:
 
 ```bash
 sudo iptables -t mangle -S FORWARD
 ```
 
-Phải thấy rule tương tự:
+Khi LAN Routing đang hoạt động phải thấy rule tương tự:
 
 ```text
--A FORWARD -i <LAN_IF> -o ppp+ -p tcp \
--m tcp --tcp-flags SYN,RST SYN \
--m comment --comment BOXPROXY-MSS \
--j TCPMSS --set-mss 1452
+-A FORWARD -i <LAN_IF> -o ppp+ -p tcp -m tcp --tcp-flags SYN,RST SYN -m comment --comment BOXPROXY-MSS -j TCPMSS --set-mss 1452
 ```
 
 Rule phải chỉ xuất hiện **một lần**.
@@ -393,6 +456,24 @@ Unable to complete PPPoE Discovery
 
 BoxProxy có thể ép một client LAN đi ra một PPPoE session cụ thể dựa trên MAC address.
 
+Client có thể được gán Static LAN IP trong WebUI.
+
+DHCP dynamic sử dụng dải:
+
+```text
+10.10.10.2 - 10.10.10.100
+```
+
+Static LAN IP sử dụng dải:
+
+```text
+10.10.10.101 - 10.10.10.254
+```
+
+Khi một MAC đã được gán Static LAN IP, WebUI phải ưu tiên hiển thị Static LAN IP đó thay cho DHCP/neighbor IP cũ.
+
+Cùng một MAC chỉ được xuất hiện **một lần** trong danh sách LAN Device Routing. IPv4 link-local `169.254.x.x` không được hiển thị.
+
 Ví dụ:
 
 ```text
@@ -419,7 +500,7 @@ Client không cần cấu hình SOCKS5 hoặc HTTP proxy.
 
 Toàn bộ traffic Internet thông thường sẽ được NAT qua PPPoE session được chỉ định.
 
-Có thể đổi client sang PPPoE khác từ WebUI.
+Có thể đổi client sang PPPoE khác từ WebUI. Sau khi đổi, kiểm tra public IPv4 từ client để xác nhận traffic đã đi qua PPPoE mới.
 
 ---
 
@@ -534,7 +615,7 @@ Không nên dùng strict mode `1` cho mô hình nhiều PPPoE/policy routing nà
 
 ## 18. Reboot test sau khi cài
 
-Sau khi hoàn tất cấu hình nên reboot:
+Sau khi hoàn tất cấu hình WAN, PPPoE, proxy và LAN Routing nên reboot:
 
 ```bash
 sudo reboot
@@ -543,34 +624,53 @@ sudo reboot
 Sau khi máy lên lại kiểm tra:
 
 ```bash
+systemctl --failed
+```
+
+Kết quả mong muốn:
+
+```text
+0 loaded units listed.
+```
+
+Kiểm tra network và các thành phần BoxProxy:
+
+```bash
 ip -br addr
-```
-
-```bash
 sudo systemctl status boxproxy-client-routing.service --no-pager
-```
-
-```bash
 sudo iptables -t mangle -S FORWARD
-```
-
-```bash
 ps aux | grep '[p]ppd'
+sudo ss -lntup | grep -E 'danted|squid'
 ```
 
+Kiểm tra service Squid mặc định vẫn bị tắt:
+
 ```bash
-sudo ss -lntup | grep -E 'danted|squid'
+systemctl is-enabled squid.service
+systemctl is-active squid.service
+```
+
+Kết quả mong muốn:
+
+```text
+masked
+inactive
 ```
 
 Cần xác nhận:
 
-* PPPoE tự khởi động lại.
-* Proxy tự khởi động lại.
-* Public IPv4 xuất hiện.
-* MAC client routing được khôi phục.
-* `BOXPROXY-MSS` xuất hiện đúng một lần.
-* Client LAN truy cập Internet bình thường.
-* WebUI hoạt động.
+- PPPoE tự khởi động lại.
+- Proxy tự khởi động lại.
+- Public IPv4 xuất hiện.
+- SOCKS5 và HTTP proxy hoạt động.
+- Static LAN IP vẫn đúng.
+- Một MAC chỉ xuất hiện một lần trong LAN Routing.
+- MAC client routing được khôi phục.
+- Có thể đổi client giữa các PPPoE session và public IPv4 đổi tương ứng.
+- `BOXPROXY-MSS` xuất hiện đúng một lần khi LAN Routing đang hoạt động.
+- Client LAN truy cập Internet, Fast.com và Speedtest bình thường.
+- WebUI hoạt động.
+- `systemctl --failed` không có service lỗi.
 
 ---
 
@@ -584,14 +684,15 @@ sudo poweroff
 
 BoxProxy đã được cấu hình để tránh các nguyên nhân từng gây shutdown chậm:
 
-* `systemd-networkd-wait-online` được mask.
-* Squid sử dụng:
+- `systemd-networkd-wait-online` được mask.
+- Package default `squid.service` được disable/mask.
+- Mỗi Squid instance của BoxProxy sử dụng:
 
 ```text
 shutdown_lifetime 1 second
 ```
 
-Do đó shutdown/reboot không nên phải chờ Squid khoảng 30 giây như cấu hình mặc định trước đây.
+Do đó shutdown/reboot không nên phải chờ Squid mặc định khoảng 30 giây.
 
 ---
 
