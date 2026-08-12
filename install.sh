@@ -289,6 +289,13 @@ network: {config: disabled}
 EOF
 fi
 
+touch /etc/cloud/cloud-init.disabled
+
+systemctl disable cloud-init-local.service >/dev/null 2>&1 || true
+systemctl disable cloud-init.service >/dev/null 2>&1 || true
+systemctl disable cloud-config.service >/dev/null 2>&1 || true
+systemctl disable cloud-final.service >/dev/null 2>&1 || true
+
 rm -f /etc/netplan/*.yaml
 rm -f /etc/netplan/*.yml
 
