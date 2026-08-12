@@ -361,6 +361,16 @@ systemctl enable boxproxy-web.service
 systemctl enable boxproxy-client-routing.service
 systemctl enable isc-dhcp-server.service
 
+# Disable package default services that BoxProxy V1 does not use.
+# Dante is managed by boxproxy-dante@.service per proxy instance.
+systemctl disable danted.service >/dev/null 2>&1 || true
+systemctl mask danted.service >/dev/null 2>&1 || true
+
+# BoxProxy V1 is IPv4-only. Keep DHCPv4, disable DHCPv6 service.
+systemctl disable isc-dhcp-server6.service >/dev/null 2>&1 || true
+systemctl mask isc-dhcp-server6.service >/dev/null 2>&1 || true
+
+
 # Template PPPoE/macvlan/proxy services are enabled later
 # when WAN/proxy instances are created from BoxProxy.
 
