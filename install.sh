@@ -366,6 +366,11 @@ systemctl enable isc-dhcp-server.service
 systemctl disable danted.service >/dev/null 2>&1 || true
 systemctl mask danted.service >/dev/null 2>&1 || true
 
+# Disable package default Squid service.
+# BoxProxy manages Squid with its per-instance service template.
+systemctl disable squid.service >/dev/null 2>&1 || true
+systemctl mask squid.service >/dev/null 2>&1 || true
+
 # BoxProxy V1 is IPv4-only. Keep DHCPv4, disable DHCPv6 service.
 systemctl disable isc-dhcp-server6.service >/dev/null 2>&1 || true
 systemctl mask isc-dhcp-server6.service >/dev/null 2>&1 || true

@@ -922,13 +922,69 @@ EOF
 
     echo "["
 
-    FIRST=1
+	    FIRST=1
+
+    # Static reservation: MAC -> IP.
+    declare -A STATIC_IP_BY_MAC
+
+    RES_FILE="/etc/dhcp/boxproxy-reservations.conf"
+
+    if [ -f "$RES_FILE" ]; then
+        while read -r RES_MAC RES_IP; do
+            [ -n "$RES_MAC" ] || continue
+            [ -n "$RES_IP" ] || continue
+
+            RES_MAC=$(echo "$RES_MAC" | tr 'A-F' 'a-f')
+            STATIC_IP_BY_MAC["$RES_MAC"]="$RES_IP"
+        done < <(
+            awk '
+                /hardware ethernet/ {
+                    gsub(";", "", $3)
+                    mac=$3
+                }
+
+                /fixed-address/ {
+                    gsub(";", "", $2)
+                    print mac, $2
+                }
+            ' "$RES_FILE"
+        )
+    fi
+
+    # Một MAC chỉ được xuất hiện một lần trên WebUI.
+    declare -A SEEN_MAC
 
     while read -r NEIGH_IP _ NEIGH_MAC _; do
         [ -n "$NEIGH_IP" ] || continue
         [ -n "$NEIGH_MAC" ] || continue
 
         NEIGH_MAC=$(echo "$NEIGH_MAC" | tr 'A-F' 'a-f')
+
+        # Không hiển thị IPv4 link-local 169.254.x.x.
+        case "$NEIGH_IP" in
+            169.254.*)
+                continue
+                ;;
+        esac
+
+        # Chỉ lấy client thuộc LAN BoxProxy.
+        case "$NEIGH_IP" in
+            10.10.10.*)
+                ;;
+            *)
+                continue
+                ;;
+        esac
+
+        # Một MAC chỉ một dòng.
+        [ -z "${SEEN_MAC[$NEIGH_MAC]:-}" ] || continue
+        SEEN_MAC["$NEIGH_MAC"]=1
+
+        # Nếu đã có Static LAN IP thì luôn ưu tiên IP đó,
+        # không dùng DHCP/neighbor IP cũ.
+        if [ -n "${STATIC_IP_BY_MAC[$NEIGH_MAC]:-}" ]; then
+            NEIGH_IP="${STATIC_IP_BY_MAC[$NEIGH_MAC]}"
+        fi
 
         MAPPED="false"
         MAP_INSTANCE_ID=0
