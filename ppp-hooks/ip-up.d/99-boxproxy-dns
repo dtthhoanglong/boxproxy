@@ -5,20 +5,44 @@ IFACE="$1"
 for CONF in /etc/boxproxy/instances/*.conf; do
     [ -f "$CONF" ] || continue
 
+    unset WAN_ID PPP_IF
     . "$CONF"
 
-    if [ "$PPP_IF" = "$IFACE" ]; then
-        if [ -f /etc/ppp/resolv.conf ]; then
-            DNS_SERVERS=$(awk '/^nameserver/ {printf "%s ", $2}' /etc/ppp/resolv.conf)
+    [ "$PPP_IF" = "$IFACE" ] || continue
 
-            if [ -n "$DNS_SERVERS" ]; then
-                /usr/bin/resolvectl dns "$IFACE" $DNS_SERVERS
-                /usr/bin/resolvectl domain "$IFACE" '~.'
-            fi
-        fi
+    ID="$(basename "$CONF" .conf)"
 
-        exit 0
+    mkdir -p /etc/boxproxy/dns
+    chmod 700 /etc/boxproxy/dns
+
+    DNS_STATE="/etc/boxproxy/dns/${ID}.servers"
+
+    {
+        printf 'DNS1="%s"\n' "${DNS1:-}"
+        printf 'DNS2="%s"\n' "${DNS2:-}"
+    } > "$DNS_STATE"
+
+    chmod 600 "$DNS_STATE"
+
+    # Giữ systemd-resolved của host hoạt động như trước.
+    if [ -n "${DNS1:-}" ]; then
+        /usr/bin/resolvectl dns "$IFACE" \
+            ${DNS1:+$DNS1} \
+            ${DNS2:+$DNS2} 2>/dev/null || true
+
+        /usr/bin/resolvectl domain "$IFACE" '~.' \
+            2>/dev/null || true
     fi
+
+    systemctl reset-failed \
+        "boxproxy-dns@${ID}.service" \
+        2>/dev/null || true
+
+    systemctl restart \
+        "boxproxy-dns@${ID}.service" \
+        2>/dev/null || true
+
+    exit 0
 done
 
 exit 0

@@ -2,6 +2,27 @@
 
 IFACE="$1"
 
-/usr/bin/resolvectl revert "$IFACE" 2>/dev/null || true
+for CONF in /etc/boxproxy/instances/*.conf; do
+    [ -f "$CONF" ] || continue
+
+    unset PPP_IF
+    . "$CONF"
+
+    [ "$PPP_IF" = "$IFACE" ] || continue
+
+    ID="$(basename "$CONF" .conf)"
+
+    systemctl stop \
+        "boxproxy-dns@${ID}.service" \
+        2>/dev/null || true
+
+    rm -f "/etc/boxproxy/dns/${ID}.servers"
+    rm -f "/etc/boxproxy/dns/${ID}.conf"
+
+    /usr/bin/resolvectl revert "$IFACE" \
+        2>/dev/null || true
+
+    exit 0
+done
 
 exit 0

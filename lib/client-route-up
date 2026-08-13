@@ -30,6 +30,7 @@ fi
 TABLE=$((100 + INSTANCE_ID))
 MARK=$((10000 + INSTANCE_ID))
 RULE_PREF=$((2000 + INSTANCE_ID))
+DNS_PORT=$((5300 + INSTANCE_ID))
 
 # MARK theo MAC nguồn trên LAN
 iptables -t mangle -C PREROUTING \
@@ -43,6 +44,39 @@ iptables -t mangle -A PREROUTING \
     -m mac --mac-source "$CLIENT_MAC" \
     -m comment --comment "BOXPROXY-CLIENT" \
     -j MARK --set-mark "$MARK"
+
+# DNS của client luôn đi vào DNS instance tương ứng.
+iptables -t nat -C PREROUTING \
+    -i "$LAN_IF" \
+    -p udp \
+    --dport 53 \
+    -m mac --mac-source "$CLIENT_MAC" \
+    -m comment --comment "BOXPROXY-DNS" \
+    -j DNAT --to-destination "10.10.10.1:${DNS_PORT}" \
+    2>/dev/null || \
+iptables -t nat -A PREROUTING \
+    -i "$LAN_IF" \
+    -p udp \
+    --dport 53 \
+    -m mac --mac-source "$CLIENT_MAC" \
+    -m comment --comment "BOXPROXY-DNS" \
+    -j DNAT --to-destination "10.10.10.1:${DNS_PORT}"
+
+iptables -t nat -C PREROUTING \
+    -i "$LAN_IF" \
+    -p tcp \
+    --dport 53 \
+    -m mac --mac-source "$CLIENT_MAC" \
+    -m comment --comment "BOXPROXY-DNS" \
+    -j DNAT --to-destination "10.10.10.1:${DNS_PORT}" \
+    2>/dev/null || \
+iptables -t nat -A PREROUTING \
+    -i "$LAN_IF" \
+    -p tcp \
+    --dport 53 \
+    -m mac --mac-source "$CLIENT_MAC" \
+    -m comment --comment "BOXPROXY-DNS" \
+    -j DNAT --to-destination "10.10.10.1:${DNS_PORT}"
 
 # fwmark -> routing table của PPPoE instance
 ip rule del pref "$RULE_PREF" 2>/dev/null || true

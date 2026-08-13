@@ -1,0 +1,50 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+
+INSTANCE_CONF="/etc/boxproxy/instances/${ID}.conf"
+DNS_STATE="/etc/boxproxy/dns/${ID}.servers"
+OUT="/etc/boxproxy/dns/${ID}.conf"
+
+[ -f "$INSTANCE_CONF" ] || exit 1
+[ -f "$DNS_STATE" ] || {
+    echo "DNS state not found for instance $ID"
+    exit 1
+}
+
+. "$INSTANCE_CONF"
+
+DNS1=""
+DNS2=""
+
+. "$DNS_STATE"
+
+[ -n "${DNS1:-}" ] || {
+    echo "No ISP DNS available for instance $ID"
+    exit 1
+}
+
+DNS_PORT=$((5300 + ID))
+
+{
+    echo "no-resolv"
+    echo "no-hosts"
+    echo
+    echo "listen-address=10.10.10.1"
+    echo "bind-interfaces"
+    echo "port=${DNS_PORT}"
+    echo
+    echo "server=${DNS1}@${PPP_IF}"
+
+    if [ -n "${DNS2:-}" ] && [ "$DNS2" != "$DNS1" ]; then
+        echo "server=${DNS2}@${PPP_IF}"
+    fi
+
+    echo
+    echo "cache-size=1000"
+} > "$OUT"
+
+chmod 600 "$OUT"
+
+dnsmasq --test -C "$OUT"

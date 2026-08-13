@@ -96,6 +96,7 @@ apt-get install -y \
     pppoe \
     dante-server \
     squid \
+    dnsmasq-base \
     apache2-utils \
     isc-dhcp-server \
     python3 \
@@ -114,6 +115,7 @@ install -d -m 700 /etc/boxproxy
 install -d -m 700 /etc/boxproxy/wans
 install -d -m 700 /etc/boxproxy/instances
 install -d -m 700 /etc/boxproxy/dante
+install -d -m 700 /etc/boxproxy/dns
 install -d -m 700 /etc/boxproxy/squid
 install -d -m 700 /etc/boxproxy/client-routes
 

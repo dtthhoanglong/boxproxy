@@ -1,0 +1,14 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+
+GENERATOR="/usr/local/lib/boxproxy/dns-generate"
+CONF="/etc/boxproxy/dns/${ID}.conf"
+
+"$GENERATOR" "$ID"
+
+exec /usr/sbin/dnsmasq \
+    --no-daemon \
+    --keep-in-foreground \
+    --conf-file="$CONF"

@@ -1,0 +1,13 @@
+[Unit]
+Description=BoxProxy ISP DNS %i
+Requires=boxproxy-pppoe@%i.service
+After=boxproxy-pppoe@%i.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/boxproxy/dns-run %i
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

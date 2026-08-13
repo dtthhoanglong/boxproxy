@@ -33,6 +33,14 @@ iptables -S FORWARD \
         iptables $RULE 2>/dev/null || true
     done
 
+# Xóa các DNS redirect rule cũ do BoxProxy tạo.
+iptables -t nat -S PREROUTING \
+    | grep 'BOXPROXY-DNS' \
+    | sed 's/^-A /-D /' \
+    | while read -r RULE; do
+        iptables -t nat $RULE 2>/dev/null || true
+    done
+
 # PPPoE MTU 1492: clamp TCP MSS cho traffic LAN -> PPPoE.
 # Xóa rule cũ trước để client-route-sync chạy nhiều lần không tạo duplicate.
 iptables -t mangle -S FORWARD \
