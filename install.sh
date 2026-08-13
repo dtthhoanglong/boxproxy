@@ -267,6 +267,19 @@ sed -i \
 
 dhcpd -t -cf /etc/dhcp/dhcpd.conf
 
+# isc-dhcp-server may start before the LAN static IPv4 is ready
+# because BoxProxy intentionally masks systemd-networkd-wait-online.
+# Wait only for the BoxProxy LAN address instead of waiting for all NICs.
+install -d -m 755 /etc/systemd/system/isc-dhcp-server.service.d
+
+cat > /etc/systemd/system/isc-dhcp-server.service.d/boxproxy.conf <<'EOF'
+[Unit]
+After=systemd-networkd.service
+
+[Service]
+ExecStartPre=/usr/local/lib/boxproxy/wait-lan-ready
+EOF
+
 echo
 echo "============================================================"
 echo "11. Configuring network"
