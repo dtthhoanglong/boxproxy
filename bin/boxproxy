@@ -43,6 +43,8 @@ if [[ "$ACTION" != "set-count" &&
       "$ACTION" != "client-ip-remove" &&
       "$ACTION" != "wan-add" &&
       "$ACTION" != "wan-add-dhcp" &&
+      "$ACTION" != "wan-start" &&
+      "$ACTION" != "wan-stop" &&
       "$ACTION" != "wan-save" &&
       "$ACTION" != "wan-delete" &&
       "$ACTION" != "wan-proxy-enable" &&
@@ -573,6 +575,56 @@ fi
     done
 
     echo "Proxy services disabled for WAN $TARGET_WAN"
+    ;;
+
+wan-start)
+    TARGET_WAN="$ID"
+    WAN_CONF="/etc/boxproxy/wans/${TARGET_WAN}.conf"
+
+    if [ ! -f "$WAN_CONF" ]; then
+        echo "WAN $TARGET_WAN does not exist"
+        exit 1
+    fi
+
+    unset WAN_TYPE
+    . "$WAN_CONF"
+
+    WAN_TYPE="${WAN_TYPE:-pppoe}"
+
+    case "$WAN_TYPE" in
+        dhcp)
+            /usr/local/lib/boxproxy/dhcp-wan-up "$TARGET_WAN"
+            ;;
+        *)
+            echo "wan-start currently supports DHCP WAN only"
+            exit 1
+            ;;
+    esac
+    ;;
+
+wan-stop)
+    TARGET_WAN="$ID"
+    WAN_CONF="/etc/boxproxy/wans/${TARGET_WAN}.conf"
+
+    if [ ! -f "$WAN_CONF" ]; then
+        echo "WAN $TARGET_WAN does not exist"
+        exit 1
+    fi
+
+    unset WAN_TYPE
+    . "$WAN_CONF"
+
+    WAN_TYPE="${WAN_TYPE:-pppoe}"
+
+    case "$WAN_TYPE" in
+        dhcp)
+            /usr/local/lib/boxproxy/dhcp-wan-down "$TARGET_WAN"
+            ;;
+        *)
+            echo "wan-stop currently supports DHCP WAN only"
+            exit 1
+            ;;
+    esac
     ;;
 
 wan-delete)
