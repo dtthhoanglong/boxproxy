@@ -636,9 +636,55 @@ wan-start)
     WAN_TYPE="${WAN_TYPE:-pppoe}"
 
     case "$WAN_TYPE" in
-        dhcp)
+
+            dhcp)
             /usr/local/lib/boxproxy/dhcp-wan-up "$TARGET_WAN"
+
+            # Wait for DHCP IPv4.
+            for i in $(seq 1 30); do
+                if ip -4 -o addr show dev "$PARENT_IF" \
+                    | grep -q 'inet '; then
+                    break
+                fi
+
+                sleep 1
+            done
+
+            if ! ip -4 -o addr show dev "$PARENT_IF" \
+                | grep -q 'inet '; then
+                echo "DHCP WAN $TARGET_WAN did not get IPv4"
+                exit 1
+            fi
+
+            # Rebuild routing and restart services for all instances
+            # belonging to this DHCP WAN.
+            for CONF in /etc/boxproxy/instances/*.conf; do
+                [ -f "$CONF" ] || continue
+
+                unset WAN_ID PROXY_ENABLED
+                . "$CONF"
+
+                [ "$WAN_ID" = "$TARGET_WAN" ] || continue
+
+                INSTANCE_ID=$(basename "$CONF" .conf)
+
+                /usr/local/lib/boxproxy/routing-up "$INSTANCE_ID"
+
+                if [ "${PROXY_ENABLED:-yes}" = "yes" ]; then
+                    systemctl restart \
+                        "boxproxy-dns@${INSTANCE_ID}.service"
+
+                    systemctl restart \
+                        "boxproxy-dante@${INSTANCE_ID}.service"
+
+                    systemctl restart \
+                        "boxproxy-squid@${INSTANCE_ID}.service"
+                fi
+            done
+
+            /usr/local/lib/boxproxy/client-route-sync
             ;;
+
         *)
             echo "wan-start currently supports DHCP WAN only"
             exit 1
@@ -661,9 +707,42 @@ wan-stop)
     WAN_TYPE="${WAN_TYPE:-pppoe}"
 
     case "$WAN_TYPE" in
-        dhcp)
+
+            dhcp)
+            # Stop all proxy/DNS services belonging to this WAN first.
+            for CONF in /etc/boxproxy/instances/*.conf; do
+                [ -f "$CONF" ] || continue
+
+                unset WAN_ID
+                . "$CONF"
+
+                [ "$WAN_ID" = "$TARGET_WAN" ] || continue
+
+                INSTANCE_ID=$(basename "$CONF" .conf)
+
+                systemctl stop \
+                    "boxproxy-dante@${INSTANCE_ID}.service" \
+                    2>/dev/null || true
+
+                systemctl stop \
+                    "boxproxy-squid@${INSTANCE_ID}.service" \
+                    2>/dev/null || true
+
+                systemctl stop \
+                    "boxproxy-dns@${INSTANCE_ID}.service" \
+                    2>/dev/null || true
+
+                /usr/local/lib/boxproxy/routing-down \
+                    "$INSTANCE_ID" \
+                    2>/dev/null || true
+            done
+
             /usr/local/lib/boxproxy/dhcp-wan-down "$TARGET_WAN"
+
+            /usr/local/lib/boxproxy/client-route-sync \
+                2>/dev/null || true
             ;;
+
         *)
             echo "wan-stop currently supports DHCP WAN only"
             exit 1
