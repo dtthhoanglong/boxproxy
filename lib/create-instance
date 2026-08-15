@@ -28,6 +28,9 @@ fi
 
 . "$WAN_CONF"
 
+# BoxProxy V1 WAN configs do not contain WAN_TYPE.
+WAN_TYPE="${WAN_TYPE:-pppoe}"
+
 SETTINGS="/etc/boxproxy/settings.conf"
 CONF="/etc/boxproxy/instances/${ID}.conf"
 PEER="/etc/ppp/peers/pppoe$(printf '%02d' "$ID")"
@@ -46,31 +49,34 @@ fi
 
 NN=$(printf '%02d' "$ID")
 
-MACVLAN_IF="mvppp${NN}"
-PPP_IF="ppp${NN}"
-PPPOE_PEER="pppoe${NN}"
-
 SOCKS_PORT=$((SOCKS_BASE_PORT + ID))
 HTTP_PORT=$((HTTP_BASE_PORT + ID))
 
 PROXY_USER="proxy${ID}"
 
-# Sinh MAC không trùng bất kỳ instance nào
-while true; do
-    NEW_MAC=$(printf '%s:%02x:%02x:%02x\n' \
-        "$MAC_PREFIX" \
-        $((RANDOM % 256)) \
-        $((RANDOM % 256)) \
-        $((RANDOM % 256)))
+case "$WAN_TYPE" in
+    pppoe)
+        MACVLAN_IF="mvppp${NN}"
+        PPP_IF="ppp${NN}"
+        PPPOE_PEER="pppoe${NN}"
 
-    if ! grep -Rqi "^MAC=\"$NEW_MAC\"$" \
-        /etc/boxproxy/instances/*.conf 2>/dev/null; then
-        break
-    fi
-done
+        # Sinh MAC không trùng bất kỳ instance nào
+        while true; do
+            NEW_MAC=$(printf '%s:%02x:%02x:%02x\n' \
+                "$MAC_PREFIX" \
+                $((RANDOM % 256)) \
+                $((RANDOM % 256)) \
+                $((RANDOM % 256)))
 
-cat > "$CONF" <<EOF
+            if ! grep -Rqi "^MAC=\"$NEW_MAC\"$" \
+                /etc/boxproxy/instances/*.conf 2>/dev/null; then
+                break
+            fi
+        done
+
+        cat > "$CONF" <<EOF
 WAN_ID="$WAN_ID"
+WAN_TYPE="pppoe"
 
 MACVLAN_IF="$MACVLAN_IF"
 MAC="$NEW_MAC"
@@ -86,10 +92,10 @@ PROXY_PASSWORD="$PROXY_PASSWORD"
 PROXY_ENABLED="${WAN_PROXY_ENABLED:-yes}"
 EOF
 
-chmod 600 "$CONF"
+        chmod 600 "$CONF"
 
-# Tạo PPPoE peer theo WAN tương ứng
-cat > "$PEER" <<EOF
+        # Tạo PPPoE peer theo WAN tương ứng
+        cat > "$PEER" <<EOF
 plugin rp-pppoe.so
 mvppp${NN}
 
@@ -113,7 +119,32 @@ lcp-echo-interval 10
 lcp-echo-failure 3
 EOF
 
-chmod 600 "$PEER"
+        chmod 600 "$PEER"
+        ;;
+
+    dhcp)
+        cat > "$CONF" <<EOF
+WAN_ID="$WAN_ID"
+WAN_TYPE="dhcp"
+
+EGRESS_IF="$PARENT_IF"
+
+SOCKS_PORT="$SOCKS_PORT"
+HTTP_PORT="$HTTP_PORT"
+
+PROXY_USER="$PROXY_USER"
+PROXY_PASSWORD="$PROXY_PASSWORD"
+PROXY_ENABLED="${WAN_PROXY_ENABLED:-yes}"
+EOF
+
+        chmod 600 "$CONF"
+        ;;
+
+    *)
+        echo "Unsupported WAN type: $WAN_TYPE"
+        exit 1
+        ;;
+esac
 
 # Tạo Linux user cho Dante nếu chưa có
 if ! id "$PROXY_USER" >/dev/null 2>&1; then

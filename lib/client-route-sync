@@ -33,6 +33,14 @@ iptables -S FORWARD \
         iptables $RULE 2>/dev/null || true
     done
 
+# Xóa fail-close rule cũ trước khi dựng lại routing.
+iptables -S FORWARD \
+    | grep 'BOXPROXY-FAILCLOSE' \
+    | sed 's/^-A /-D /' \
+    | while read -r RULE; do
+        iptables $RULE 2>/dev/null || true
+    done
+
 # Xóa các DNS redirect rule cũ do BoxProxy tạo.
 iptables -t nat -S PREROUTING \
     | grep 'BOXPROXY-DNS' \
@@ -71,5 +79,15 @@ for CONF in "$CONF_DIR"/*.conf; do
 
     /usr/local/lib/boxproxy/client-route-up "$CONF"
 done
+
+# Fail-close LAN:
+# chỉ những client đã có BOXPROXY-CLIENT ACCEPT rule ở phía trên
+# mới được forward ra ngoài. Client chưa map sẽ dừng tại đây.
+if [ -n "$LAN_IF" ]; then
+    iptables -A FORWARD \
+        -i "$LAN_IF" \
+        -m comment --comment "BOXPROXY-FAILCLOSE" \
+        -j DROP
+fi
 
 echo "Client routes synchronized"

@@ -5,27 +5,80 @@ ID="$1"
 CONF="/etc/boxproxy/instances/${ID}.conf"
 
 [ -f "$CONF" ] || exit 1
-. "$CONF"
+
+eval "$(/usr/local/lib/boxproxy/instance-egress "$ID")"
 
 TABLE=$((100 + ID))
 
-LOCAL_IP=$(ip -4 -o addr show dev "$PPP_IF" | awk '{print $4}' | cut -d/ -f1)
-
-if [ -z "$LOCAL_IP" ]; then
-    echo "No IPv4 found on $PPP_IF"
+[ -n "${EGRESS_IF:-}" ] || {
+    echo "No egress interface for instance $ID"
     exit 1
-fi
+}
+
+[ -n "${EGRESS_IP:-}" ] || {
+    echo "No IPv4 for instance $ID"
+    exit 1
+}
 
 ip route flush table "$TABLE" 2>/dev/null || true
 
-# Fail-close fallback:
-# nếu route PPPoE biến mất thì table này vẫn chặn traffic,
-# không cho rơi xuống main table.
+# Fail-close fallback. Nếu đường WAN biến mất,
+# traffic của instance này không được rơi sang main table.
 ip route add unreachable default metric 42760 table "$TABLE"
 
-# Khi PPPoE online, route này có metric thấp hơn nên được ưu tiên.
-ip route add default dev "$PPP_IF" metric 10 table "$TABLE"
+case "$WAN_TYPE" in
+    pppoe)
+        ip route add default \
+            dev "$EGRESS_IF" \
+            metric 10 \
+            table "$TABLE"
+        ;;
 
-# Chỉ quản lý source-rule của chính PPPoE này.
+    dhcp)
+
+        EGRESS_NET=$(ip -4 route show dev "$EGRESS_IF" \
+            proto kernel scope link \
+            | awk '$1 != "default" {print $1; exit}')
+
+        GATEWAY=$(ip -4 route show default dev "$EGRESS_IF" \
+            | awk '/^default / {print $3; exit}')
+
+        [ -n "$EGRESS_NET" ] || {
+            echo "No IPv4 subnet found on $EGRESS_IF"
+            exit 1
+        }
+
+        [ -n "$GATEWAY" ] || {
+            echo "No DHCP gateway found on $EGRESS_IF"
+            exit 1
+        }
+
+        ip route add "$EGRESS_NET" \
+            dev "$EGRESS_IF" \
+            src "$EGRESS_IP" \
+            table "$TABLE"
+
+        ip route add default \
+            via "$GATEWAY" \
+            dev "$EGRESS_IF" \
+            metric 10 \
+            table "$TABLE"
+        ;;
+
+    *)
+        echo "Unsupported WAN type: $WAN_TYPE"
+        exit 1
+        ;;
+esac
+
+# Traffic có source IP của egress này luôn dùng đúng routing table.
 ip rule del pref "$((1000 + ID))" 2>/dev/null || true
-ip rule add from "$LOCAL_IP"/32 table "$TABLE" priority "$((1000 + ID))"
+ip rule add from "$EGRESS_IP"/32 \
+    table "$TABLE" \
+    priority "$((1000 + ID))"
+
+echo "Routing enabled for instance $ID"
+echo "WAN type : $WAN_TYPE"
+echo "Egress   : $EGRESS_IF"
+echo "IPv4     : $EGRESS_IP"
+echo "Table    : $TABLE"

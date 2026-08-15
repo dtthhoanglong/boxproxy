@@ -8,13 +8,13 @@ CONF="/etc/boxproxy/instances/${ID}.conf"
 . "$CONF"
 
 for i in $(seq 1 30); do
-    if ip link show "$PPP_IF" >/dev/null 2>&1; then
+    if /usr/local/lib/boxproxy/instance-egress "$ID" >/dev/null 2>&1; then
         break
     fi
     sleep 1
 done
 
-ip link show "$PPP_IF" >/dev/null 2>&1 || exit 1
+/usr/local/lib/boxproxy/instance-egress "$ID" >/dev/null 2>&1 || exit 1
 
 /usr/local/lib/boxproxy/squid-generate "$ID"
 

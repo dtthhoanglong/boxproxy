@@ -27,6 +27,13 @@ fi
 
 . /etc/boxproxy/settings.conf
 
+eval "$(/usr/local/lib/boxproxy/instance-egress "$INSTANCE_ID")"
+
+if [ -z "${EGRESS_IF:-}" ]; then
+    echo "No egress interface for proxy $INSTANCE_ID"
+    exit 1
+fi
+
 TABLE=$((100 + INSTANCE_ID))
 MARK=$((10000 + INSTANCE_ID))
 RULE_PREF=$((2000 + INSTANCE_ID))
@@ -78,41 +85,41 @@ iptables -t nat -A PREROUTING \
     -m comment --comment "BOXPROXY-DNS" \
     -j DNAT --to-destination "10.10.10.1:${DNS_PORT}"
 
-# fwmark -> routing table của PPPoE instance
+# fwmark -> routing table của proxy instance
 ip rule del pref "$RULE_PREF" 2>/dev/null || true
 ip rule add fwmark "$MARK" table "$TABLE" priority "$RULE_PREF"
 
-# NAT client qua đúng PPP interface
+# NAT client qua đúng egress interface
 iptables -t nat -C POSTROUTING \
     -s "${CLIENT_IP}/32" \
-    -o "$PPP_IF" \
+    -o "$EGRESS_IF" \
     -m comment --comment "BOXPROXY-CLIENT" \
     -j MASQUERADE \
     2>/dev/null || \
 iptables -t nat -A POSTROUTING \
     -s "${CLIENT_IP}/32" \
-    -o "$PPP_IF" \
+    -o "$EGRESS_IF" \
     -m comment --comment "BOXPROXY-CLIENT" \
     -j MASQUERADE
 
-# Forward LAN -> PPP
+# Forward LAN -> egress
 iptables -C FORWARD \
     -i "$LAN_IF" \
-    -o "$PPP_IF" \
+    -o "$EGRESS_IF" \
     -s "${CLIENT_IP}/32" \
     -m comment --comment "BOXPROXY-CLIENT" \
     -j ACCEPT \
     2>/dev/null || \
 iptables -A FORWARD \
     -i "$LAN_IF" \
-    -o "$PPP_IF" \
+    -o "$EGRESS_IF" \
     -s "${CLIENT_IP}/32" \
     -m comment --comment "BOXPROXY-CLIENT" \
     -j ACCEPT
 
-# Return traffic PPP -> LAN
+# Return traffic egress -> LAN
 iptables -C FORWARD \
-    -i "$PPP_IF" \
+    -i "$EGRESS_IF" \
     -o "$LAN_IF" \
     -d "${CLIENT_IP}/32" \
     -m conntrack --ctstate ESTABLISHED,RELATED \
@@ -120,7 +127,7 @@ iptables -C FORWARD \
     -j ACCEPT \
     2>/dev/null || \
 iptables -A FORWARD \
-    -i "$PPP_IF" \
+    -i "$EGRESS_IF" \
     -o "$LAN_IF" \
     -d "${CLIENT_IP}/32" \
     -m conntrack --ctstate ESTABLISHED,RELATED \
@@ -131,6 +138,6 @@ echo "Client route enabled:"
 echo "MAC        : $CLIENT_MAC"
 echo "Client IP  : $CLIENT_IP"
 echo "Proxy ID   : $INSTANCE_ID"
-echo "PPP        : $PPP_IF"
+echo "Egress     : $EGRESS_IF"
 echo "Table      : $TABLE"
 echo "Mark       : $MARK"

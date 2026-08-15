@@ -1,0 +1,57 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+INSTANCE_CONF="/etc/boxproxy/instances/${ID}.conf"
+
+[ -f "$INSTANCE_CONF" ] || {
+    echo "Instance $ID does not exist" >&2
+    exit 1
+}
+
+unset WAN_ID PPP_IF EGRESS_IF
+. "$INSTANCE_CONF"
+
+WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
+
+[ -f "$WAN_CONF" ] || {
+    echo "WAN $WAN_ID does not exist" >&2
+    exit 1
+}
+
+unset WAN_TYPE PARENT_IF
+. "$WAN_CONF"
+
+WAN_TYPE="${WAN_TYPE:-pppoe}"
+
+case "$WAN_TYPE" in
+    pppoe)
+        EGRESS_IF="${PPP_IF:-}"
+        ;;
+    dhcp)
+        EGRESS_IF="${PARENT_IF:-}"
+        ;;
+    *)
+        echo "Unsupported WAN type: $WAN_TYPE" >&2
+        exit 1
+        ;;
+esac
+
+[ -n "$EGRESS_IF" ] || {
+    echo "No egress interface for instance $ID" >&2
+    exit 1
+}
+
+EGRESS_IP=$(ip -4 -o addr show dev "$EGRESS_IF" 2>/dev/null \
+    | awk '{print $4}' \
+    | cut -d/ -f1 \
+    | head -n1)
+
+[ -n "$EGRESS_IP" ] || {
+    echo "No IPv4 found on $EGRESS_IF" >&2
+    exit 1
+}
+
+printf 'WAN_TYPE=%s\n' "$WAN_TYPE"
+printf 'EGRESS_IF=%s\n' "$EGRESS_IF"
+printf 'EGRESS_IP=%s\n' "$EGRESS_IP"

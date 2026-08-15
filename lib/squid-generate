@@ -7,19 +7,19 @@ OUT="/etc/boxproxy/squid/${ID}.conf"
 
 [ -f "$CONF" ] || exit 1
 . "$CONF"
-PPP_IP=$(ip -4 -o addr show dev "$PPP_IF" | awk '{print $4}' | cut -d/ -f1)
 
-if [ -z "$PPP_IP" ]; then
-    echo "No IPv4 found on $PPP_IF"
+eval "$(/usr/local/lib/boxproxy/instance-egress "$ID")"
+
+if [ -z "${EGRESS_IF:-}" ] || [ -z "${EGRESS_IP:-}" ]; then
+    echo "No egress available for instance $ID"
     exit 1
 fi
-
 
 cat > "$OUT" <<EOF
 
 http_port 10.10.10.1:${HTTP_PORT}
-http_port ${PPP_IP}:${HTTP_PORT}
-tcp_outgoing_address ${PPP_IP}
+http_port ${EGRESS_IP}:${HTTP_PORT}
+tcp_outgoing_address ${EGRESS_IP}
 
 shutdown_lifetime 1 second
 

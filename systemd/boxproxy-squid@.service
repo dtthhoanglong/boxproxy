@@ -1,7 +1,6 @@
 [Unit]
 Description=BoxProxy Squid HTTP %i
-Requires=boxproxy-pppoe@%i.service
-After=boxproxy-pppoe@%i.service
+After=network.target
 
 [Service]
 Type=simple

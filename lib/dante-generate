@@ -8,23 +8,21 @@ OUT="/etc/boxproxy/dante/${ID}.conf"
 [ -f "$CONF" ] || exit 1
 . "$CONF"
 
-PPP_IP=$(ip -4 -o addr show dev "$PPP_IF" \
-    | awk '{print $4}' \
-    | cut -d/ -f1)
+eval "$(/usr/local/lib/boxproxy/instance-egress "$ID")"
 
-if [ -z "$PPP_IP" ]; then
-    echo "No IPv4 found on $PPP_IF"
+if [ -z "${EGRESS_IF:-}" ] || [ -z "${EGRESS_IP:-}" ]; then
+    echo "No egress available for instance $ID"
     exit 1
 fi
 
 cat > "$OUT" <<EOF
 logoutput: syslog
 
-# Accept SOCKS5 from LAN and from the PPPoE public IP.
+# Accept SOCKS5 from LAN and from the current egress IPv4.
 internal: 10.10.10.1 port = ${SOCKS_PORT}
-internal: ${PPP_IP} port = ${SOCKS_PORT}
+internal: ${EGRESS_IP} port = ${SOCKS_PORT}
 
-external: ${PPP_IF}
+external: ${EGRESS_IF}
 
 clientmethod: none
 socksmethod: username

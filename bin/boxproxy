@@ -159,6 +159,10 @@ change-mac)
         exit 1
     fi
 
+    unset WAN_TYPE
+    . "$WAN_CONF"
+    WAN_TYPE="${WAN_TYPE:-pppoe}"
+
     if ! [[ "$TARGET" =~ ^[0-9]+$ ]] || [ "$TARGET" -lt 1 ]; then
         echo "Invalid proxy count"
         exit 1
@@ -198,18 +202,58 @@ change-mac)
             echo
             echo "Creating Proxy $NEW_ID on WAN $TARGET_WAN..."
 
-            /usr/local/lib/boxproxy/create-instance \
+                 /usr/local/lib/boxproxy/create-instance \
                 "$NEW_ID" \
                 "$TARGET_WAN"
 
-        systemctl enable "boxproxy-macvlan@${NEW_ID}.service" >/dev/null
-        systemctl enable "boxproxy-pppoe@${NEW_ID}.service" >/dev/null
+            case "$WAN_TYPE" in
+                pppoe)
+                    systemctl enable \
+                        "boxproxy-macvlan@${NEW_ID}.service" >/dev/null
 
-        systemctl disable "boxproxy-dante@${NEW_ID}.service" >/dev/null 2>&1 || true
-        systemctl disable "boxproxy-squid@${NEW_ID}.service" >/dev/null 2>&1 || true
+                    systemctl enable \
+                        "boxproxy-pppoe@${NEW_ID}.service" >/dev/null
 
-        "$0" start "$NEW_ID" || true
-    done
+                    systemctl disable \
+                        "boxproxy-dante@${NEW_ID}.service" \
+                        >/dev/null 2>&1 || true
+
+                    systemctl disable \
+                        "boxproxy-squid@${NEW_ID}.service" \
+                        >/dev/null 2>&1 || true
+
+                    "$0" start "$NEW_ID" || true
+                    ;;
+
+                dhcp)
+                    # DHCP WAN uses the physical WAN interface directly.
+                    # Do not create/start macvlan or PPPoE services.
+                    systemctl disable \
+                        "boxproxy-macvlan@${NEW_ID}.service" \
+                        >/dev/null 2>&1 || true
+
+                    systemctl disable \
+                        "boxproxy-pppoe@${NEW_ID}.service" \
+                        >/dev/null 2>&1 || true
+
+                    systemctl disable \
+                        "boxproxy-dante@${NEW_ID}.service" \
+                        >/dev/null 2>&1 || true
+
+                    systemctl disable \
+                        "boxproxy-squid@${NEW_ID}.service" \
+                        >/dev/null 2>&1 || true
+
+                    echo "DHCP proxy instance $NEW_ID created"
+                    echo "Proxy services will be connected to the DHCP egress later"
+                    ;;
+
+                *)
+                    echo "Unsupported WAN type: $WAN_TYPE"
+                    exit 1
+                    ;;
+            esac
+        done
 
     elif [ "$TARGET" -lt "$CURRENT" ]; then
         TO_DELETE=$((CURRENT - TARGET))

@@ -8,17 +8,32 @@ DNS_STATE="/etc/boxproxy/dns/${ID}.servers"
 OUT="/etc/boxproxy/dns/${ID}.conf"
 
 [ -f "$INSTANCE_CONF" ] || exit 1
-[ -f "$DNS_STATE" ] || {
-    echo "DNS state not found for instance $ID"
-    exit 1
-}
 
 . "$INSTANCE_CONF"
+
+eval "$(/usr/local/lib/boxproxy/instance-egress "$ID")"
 
 DNS1=""
 DNS2=""
 
-. "$DNS_STATE"
+# PPPoE hiện tại vẫn lấy DNS từ state do PPP hook tạo.
+if [ -f "$DNS_STATE" ]; then
+    . "$DNS_STATE"
+fi
+
+# DHCP WAN: lấy DNS mà systemd-resolved nhận được từ DHCP.
+if [ "$WAN_TYPE" = "dhcp" ] && [ -z "${DNS1:-}" ]; then
+    DNS_LINE=$(
+        resolvectl dns "$EGRESS_IF" 2>/dev/null \
+            | sed -n 's/^[^:]*: //p' \
+            | head -n1
+    )
+
+    set -- $DNS_LINE
+
+    DNS1="${1:-}"
+    DNS2="${2:-}"
+fi
 
 [ -n "${DNS1:-}" ] || {
     echo "No ISP DNS available for instance $ID"
@@ -31,14 +46,16 @@ DNS_PORT=$((5300 + ID))
     echo "no-resolv"
     echo "no-hosts"
     echo
+
     echo "listen-address=10.10.10.1"
     echo "bind-interfaces"
     echo "port=${DNS_PORT}"
     echo
-    echo "server=${DNS1}@${PPP_IF}"
+
+    echo "server=${DNS1}@${EGRESS_IF}"
 
     if [ -n "${DNS2:-}" ] && [ "$DNS2" != "$DNS1" ]; then
-        echo "server=${DNS2}@${PPP_IF}"
+        echo "server=${DNS2}@${EGRESS_IF}"
     fi
 
     echo

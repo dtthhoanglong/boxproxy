@@ -20,7 +20,16 @@ fi
 . "$INSTANCE_CONF"
 . /etc/boxproxy/settings.conf
 
+eval "$(/usr/local/lib/boxproxy/instance-egress "$INSTANCE_ID" 2>/dev/null)" || true
+
+# Nếu WAN đã down trước khi cleanup thì PPPoE V1 vẫn có thể
+# dùng tên interface cũ để gỡ các iptables rule.
+if [ -z "${EGRESS_IF:-}" ]; then
+    EGRESS_IF="${PPP_IF:-}"
+fi
+
 TABLE=$((100 + INSTANCE_ID))
+
 MARK=$((10000 + INSTANCE_ID))
 RULE_PREF=$((2000 + INSTANCE_ID))
 DNS_PORT=$((5300 + INSTANCE_ID))
@@ -58,7 +67,7 @@ ip rule del pref "$RULE_PREF" 2>/dev/null || true
 # Gỡ NAT
 iptables -t nat -D POSTROUTING \
     -s "${CLIENT_IP}/32" \
-    -o "$PPP_IF" \
+    -o "$EGRESS_IF" \
     -m comment --comment "BOXPROXY-CLIENT" \
     -j MASQUERADE \
     2>/dev/null || true
@@ -66,7 +75,7 @@ iptables -t nat -D POSTROUTING \
 # Gỡ forward LAN -> PPP
 iptables -D FORWARD \
     -i "$LAN_IF" \
-    -o "$PPP_IF" \
+    -o "$EGRESS_IF" \
     -s "${CLIENT_IP}/32" \
     -m comment --comment "BOXPROXY-CLIENT" \
     -j ACCEPT \
@@ -74,7 +83,7 @@ iptables -D FORWARD \
 
 # Gỡ return traffic PPP -> LAN
 iptables -D FORWARD \
-    -i "$PPP_IF" \
+    -i "$EGRESS_IF" \
     -o "$LAN_IF" \
     -d "${CLIENT_IP}/32" \
     -m conntrack --ctstate ESTABLISHED,RELATED \
