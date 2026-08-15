@@ -733,6 +733,7 @@ fi
 
     cat > "$WAN_CONF" <<EOF
 WAN_ID="$NEW_WAN_ID"
+WAN_TYPE="pppoe"
 PARENT_IF="$NEW_IF"
 PARENT_MAC="$NEW_MAC"
 
@@ -761,14 +762,18 @@ EOF
         [ -f "$WAN_CONF" ] || continue
 
         unset WAN_ID
+        unset WAN_TYPE
         unset PARENT_IF
         unset PPPOE_USER
         unset WAN_PROXY_ENABLED
 
-	. "$WAN_CONF"
+        . "$WAN_CONF"
 
-COUNT=0
-ANY_PROXY_ENABLED="no"
+        # Backward compatibility with BoxProxy V1 WAN configs.
+        WAN_TYPE="${WAN_TYPE:-pppoe}"
+
+        COUNT=0
+        ANY_PROXY_ENABLED="no"
 
 for CONF in /etc/boxproxy/instances/*.conf; do
 
@@ -795,10 +800,11 @@ done
 
         FIRST=0
 
-printf '  {"wan_id":%s,"interface":"%s","pppoe_user":"%s","proxy_count":%s,"proxy_enabled":"%s"}' \
+printf '  {"wan_id":%s,"wan_type":"%s","interface":"%s","pppoe_user":"%s","proxy_count":%s,"proxy_enabled":"%s"}' \
     "$WAN_ID" \
+    "$WAN_TYPE" \
     "$PARENT_IF" \
-    "$PPPOE_USER" \
+    "${PPPOE_USER:-}" \
     "$COUNT" \
     "$ANY_PROXY_ENABLED"
 
