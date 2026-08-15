@@ -1,0 +1,24 @@
+#!/bin/bash
+
+WAN_ID="$1"
+WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
+
+[ -f "$WAN_CONF" ] || exit 0
+
+unset WAN_TYPE PARENT_IF
+. "$WAN_CONF"
+
+WAN_TYPE="${WAN_TYPE:-pppoe}"
+
+[ "$WAN_TYPE" = "dhcp" ] || exit 0
+[ -n "${PARENT_IF:-}" ] || exit 0
+
+rm -f "/etc/systemd/network/05-boxproxy-wan-${WAN_ID}.network"
+
+networkctl reload
+networkctl reconfigure "$PARENT_IF" 2>/dev/null || true
+
+# Xóa IPv4 DHCP còn sót trên interface.
+ip -4 addr flush dev "$PARENT_IF" scope global 2>/dev/null || true
+
+echo "DHCP WAN $WAN_ID stopped on $PARENT_IF"

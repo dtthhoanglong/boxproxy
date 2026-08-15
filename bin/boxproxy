@@ -42,6 +42,7 @@ if [[ "$ACTION" != "set-count" &&
       "$ACTION" != "client-ip-assign" &&
       "$ACTION" != "client-ip-remove" &&
       "$ACTION" != "wan-add" &&
+      "$ACTION" != "wan-add-dhcp" &&
       "$ACTION" != "wan-save" &&
       "$ACTION" != "wan-delete" &&
       "$ACTION" != "wan-proxy-enable" &&
@@ -682,6 +683,71 @@ free-interfaces)
     echo "]"
     ;;
 
+wan-add-dhcp)
+    NEW_IF="$ID"
+
+    if [ -z "$NEW_IF" ]; then
+        echo "Usage: boxproxy wan-add-dhcp <interface>"
+        exit 1
+    fi
+
+    if [ ! -d "/sys/class/net/$NEW_IF" ]; then
+        echo "Interface not found: $NEW_IF"
+        exit 1
+    fi
+
+    . /etc/boxproxy/settings.conf
+
+    if [ "$NEW_IF" = "$LAN_IF" ]; then
+        echo "Interface $NEW_IF is LAN and cannot be used as WAN"
+        exit 1
+    fi
+
+    for WAN_CONF in /etc/boxproxy/wans/*.conf; do
+        [ -f "$WAN_CONF" ] || continue
+
+        USED_IF=$(grep '^PARENT_IF=' "$WAN_CONF" \
+            | cut -d= -f2 \
+            | tr -d '"')
+
+        if [ "$USED_IF" = "$NEW_IF" ]; then
+            echo "Interface $NEW_IF is already used by another WAN"
+            exit 1
+        fi
+    done
+
+    if ! ip link set dev "$NEW_IF" up; then
+        echo "Failed to bring interface $NEW_IF up"
+        exit 1
+    fi
+
+    NEW_WAN_ID=1
+
+    while [ -f "/etc/boxproxy/wans/${NEW_WAN_ID}.conf" ]; do
+        NEW_WAN_ID=$((NEW_WAN_ID + 1))
+    done
+
+    NEW_MAC=$(cat "/sys/class/net/${NEW_IF}/address" 2>/dev/null || echo "")
+
+    WAN_CONF="/etc/boxproxy/wans/${NEW_WAN_ID}.conf"
+
+    cat > "$WAN_CONF" <<EOF
+WAN_ID="$NEW_WAN_ID"
+WAN_TYPE="dhcp"
+PARENT_IF="$NEW_IF"
+PARENT_MAC="$NEW_MAC"
+
+WAN_PROXY_ENABLED="yes"
+EOF
+
+    chmod 600 "$WAN_CONF"
+
+    echo "DHCP WAN $NEW_WAN_ID created"
+    echo "Interface : $NEW_IF"
+    echo "MAC       : $NEW_MAC"
+    echo "Networking has not been started yet"
+    ;;
+
 wan-add)
     NEW_IF="$ID"
     NEW_USER="$ARG3"
@@ -835,9 +901,17 @@ printf '  {"wan_id":%s,"wan_type":"%s","interface":"%s","pppoe_user":"%s","proxy
     # Đọc cấu hình hiện tại
     unset OLD_IF
     unset OLD_PASS
+    unset WAN_TYPE
     unset WAN_PROXY_ENABLED
 
     . "$WAN_CONF"
+
+    WAN_TYPE="${WAN_TYPE:-pppoe}"
+
+    if [ "$WAN_TYPE" != "pppoe" ]; then
+        echo "wan-save currently supports PPPoE WAN only"
+        exit 1
+    fi
 
     OLD_IF="$PARENT_IF"
     OLD_PASS="$PPPOE_PASSWORD"
@@ -882,6 +956,7 @@ printf '  {"wan_id":%s,"wan_type":"%s","interface":"%s","pppoe_user":"%s","proxy
 
     cat > "$WAN_CONF" <<EOF
 WAN_ID="$WAN_ID"
+WAN_TYPE="pppoe"
 PARENT_IF="$NEW_IF"
 PARENT_MAC="$NEW_MAC"
 

@@ -1,0 +1,51 @@
+#!/bin/bash
+set -e
+
+WAN_ID="$1"
+WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
+
+[ -f "$WAN_CONF" ] || {
+    echo "WAN $WAN_ID does not exist"
+    exit 1
+}
+
+unset WAN_TYPE PARENT_IF
+. "$WAN_CONF"
+
+WAN_TYPE="${WAN_TYPE:-pppoe}"
+
+[ "$WAN_TYPE" = "dhcp" ] || {
+    echo "WAN $WAN_ID is not DHCP"
+    exit 1
+}
+
+[ -n "${PARENT_IF:-}" ] || {
+    echo "PARENT_IF is missing for WAN $WAN_ID"
+    exit 1
+}
+
+NETWORK_FILE="/etc/systemd/network/05-boxproxy-wan-${WAN_ID}.network"
+
+cat > "$NETWORK_FILE" <<EOF2
+[Match]
+Name=${PARENT_IF}
+
+[Network]
+DHCP=ipv4
+IPv6AcceptRA=no
+LinkLocalAddressing=ipv6
+
+[DHCPv4]
+UseDNS=yes
+UseRoutes=yes
+RouteMetric=$((100 + WAN_ID))
+EOF2
+
+chmod 644 "$NETWORK_FILE"
+
+ip link set dev "$PARENT_IF" up
+
+networkctl reload
+networkctl reconfigure "$PARENT_IF"
+
+echo "DHCP WAN $WAN_ID started on $PARENT_IF"
