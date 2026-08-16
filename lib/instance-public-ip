@@ -1,0 +1,45 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+
+[ -n "$ID" ] || {
+    echo "Usage: instance-public-ip <id>" >&2
+    exit 1
+}
+
+eval "$(/usr/local/lib/boxproxy/instance-egress "$ID")"
+
+[ -n "${WAN_TYPE:-}" ] || exit 1
+[ -n "${EGRESS_IF:-}" ] || exit 1
+[ -n "${EGRESS_IP:-}" ] || exit 1
+
+case "$WAN_TYPE" in
+    pppoe)
+        PUBLIC_IP="$EGRESS_IP"
+        ;;
+
+    dhcp)
+        PUBLIC_IP=$(
+            curl \
+                --interface "$EGRESS_IF" \
+                -4 \
+                --silent \
+                --show-error \
+                --max-time 8 \
+                https://api.ipify.org
+        )
+        ;;
+
+    *)
+        echo "Unsupported WAN type: $WAN_TYPE" >&2
+        exit 1
+        ;;
+esac
+
+[ -n "$PUBLIC_IP" ] || {
+    echo "No public IPv4 found for instance $ID" >&2
+    exit 1
+}
+
+printf '%s\n' "$PUBLIC_IP"

@@ -163,6 +163,11 @@ change-mac)
     . "$WAN_CONF"
     WAN_TYPE="${WAN_TYPE:-pppoe}"
 
+    if [ "$WAN_TYPE" = "dhcp" ]; then
+        echo "DHCP WAN always uses exactly one proxy"
+        exit 1
+    fi
+
     if ! [[ "$TARGET" =~ ^[0-9]+$ ]] || [ "$TARGET" -lt 1 ]; then
         echo "Invalid proxy count"
         exit 1
@@ -323,14 +328,18 @@ copy-socks)
             continue
         fi
 
-        if ip link show "$PPP_IF" >/dev/null 2>&1; then
-            IP=$(ip -4 -o addr show dev "$PPP_IF" \
-                | awk '{print $4}' \
-                | cut -d/ -f1)
+        INSTANCE_ID=$(basename "$CONF" .conf)
 
-            [ -n "$IP" ] && \
-                echo "${IP}:${SOCKS_PORT}:${PROXY_USER}:${PROXY_PASSWORD}"
+        unset WAN_TYPE EGRESS_IF EGRESS_IP
+
+        if PUBLIC_IP=$(
+            /usr/local/lib/boxproxy/instance-public-ip \
+                "$INSTANCE_ID" 2>/dev/null
+        ); then
+            [ -n "$PUBLIC_IP" ] && \
+                echo "${PUBLIC_IP}:${SOCKS_PORT}:${PROXY_USER}:${PROXY_PASSWORD}"
         fi
+
     done
     ;;
 
@@ -352,14 +361,18 @@ copy-http)
             continue
         fi
 
-        if ip link show "$PPP_IF" >/dev/null 2>&1; then
-            IP=$(ip -4 -o addr show dev "$PPP_IF" \
-                | awk '{print $4}' \
-                | cut -d/ -f1)
+        INSTANCE_ID=$(basename "$CONF" .conf)
 
-            [ -n "$IP" ] && \
-                echo "${IP}:${HTTP_PORT}:${PROXY_USER}:${PROXY_PASSWORD}"
+        unset WAN_TYPE EGRESS_IF EGRESS_IP
+
+        if PUBLIC_IP=$(
+            /usr/local/lib/boxproxy/instance-public-ip \
+                "$INSTANCE_ID" 2>/dev/null
+        ); then
+            [ -n "$PUBLIC_IP" ] && \
+                echo "${PUBLIC_IP}:${HTTP_PORT}:${PROXY_USER}:${PROXY_PASSWORD}"
         fi
+
     done
     ;;
 
@@ -389,18 +402,25 @@ echo "New password for ${PROXY_USER}: $NEW_PASS"
         echo "PROXY_PASSWORD=\"$NEW_PASS\"" >> "$CONF"
     fi
 
-    # Chỉ restart proxy services nếu Proxy đang ON và PPPoE đã có IPv4
-    PPP_IP=$(ip -4 -o addr show dev "$PPP_IF" 2>/dev/null \
-        | awk '{print $4}' \
-        | cut -d/ -f1 \
-        | head -n1)
+    # Restart proxy services only when this proxy is enabled
+    # and its current WAN egress is available.
+    if [ "${PROXY_ENABLED:-yes}" = "yes" ] && \
+       /usr/local/lib/boxproxy/instance-egress \
+           "$ID" >/dev/null 2>&1; then
 
-    if [ "${PROXY_ENABLED:-yes}" = "yes" ] && [ -n "$PPP_IP" ]; then
-        systemctl restart "boxproxy-dante@${ID}.service"
-        systemctl restart "boxproxy-squid@${ID}.service"
+        systemctl restart \
+            "boxproxy-dante@${ID}.service"
+
+        systemctl restart \
+            "boxproxy-squid@${ID}.service"
     else
-        systemctl stop "boxproxy-dante@${ID}.service" 2>/dev/null || true
-        systemctl stop "boxproxy-squid@${ID}.service" 2>/dev/null || true
+        systemctl stop \
+            "boxproxy-dante@${ID}.service" \
+            2>/dev/null || true
+
+        systemctl stop \
+            "boxproxy-squid@${ID}.service" \
+            2>/dev/null || true
     fi
 
     echo "Password for Proxy $ID changed successfully"
@@ -427,10 +447,18 @@ echo "New password for ${PROXY_USER}: $NEW_PASS"
         fi
     fi
 
-    if ip -4 -o addr show dev "$PPP_IF" >/dev/null 2>&1; then
-        systemctl start "boxproxy-dante@${ID}.service"
-        systemctl start "boxproxy-squid@${ID}.service"
-    fi
+        if /usr/local/lib/boxproxy/instance-egress \
+            "$INSTANCE_ID" >/dev/null 2>&1; then
+
+            systemctl start \
+                "boxproxy-dns@${INSTANCE_ID}.service"
+
+            systemctl start \
+                "boxproxy-dante@${INSTANCE_ID}.service"
+
+            systemctl start \
+                "boxproxy-squid@${INSTANCE_ID}.service"
+        fi
 
     echo "Proxy services enabled for session $ID"
     ;;
@@ -490,13 +518,28 @@ echo "New password for ${PROXY_USER}: $NEW_PASS"
     for CONF in /etc/boxproxy/instances/*.conf; do
         [ -f "$CONF" ] || continue
 
+        unset WAN_ID WAN_TYPE
+        unset MAC MACVLAN_IF PPP_IF PPPOE_PEER
+        unset EGRESS_IF EGRESS_IP
+        unset SOCKS_PORT HTTP_PORT
+        unset PROXY_USER PROXY_ENABLED
+
         . "$CONF"
+
         N=$(basename "$CONF" .conf)
 
-        if ip link show "$PPP_IF" >/dev/null 2>&1; then
-            IP=$(ip -4 -o addr show dev "$PPP_IF" | awk '{print $4}' | cut -d/ -f1)
+        INSTANCE_WAN_TYPE="${WAN_TYPE:-pppoe}"
+
+        unset EGRESS_IF EGRESS_IP
+
+        if EGRESS_INFO=$(/usr/local/lib/boxproxy/instance-egress "$N" 2>/dev/null); then
+            eval "$EGRESS_INFO"
+            IP="${EGRESS_IP:-}"
             STATE="online"
         else
+            WAN_TYPE="$INSTANCE_WAN_TYPE"
+            EGRESS_IF="${EGRESS_IF:-}"
+            EGRESS_IP=""
             IP=""
             STATE="offline"
         fi
@@ -505,15 +548,24 @@ echo "New password for ${PROXY_USER}: $NEW_PASS"
         PPPOE_STATE=$(systemctl is-active "boxproxy-pppoe@${N}.service" 2>/dev/null || true)
         DANTE_STATE=$(systemctl is-active "boxproxy-dante@${N}.service" 2>/dev/null || true)
         SQUID_STATE=$(systemctl is-active "boxproxy-squid@${N}.service" 2>/dev/null || true)
-        if [ -n "$IP" ]; then
-    PPPOE_PROGRESS="connected"
-elif [ "$PPPOE_STATE" = "active" ]; then
-    PPPOE_PROGRESS="connecting"
-elif [ "$PPPOE_STATE" = "failed" ]; then
-    PPPOE_PROGRESS="failed"
-else
-    PPPOE_PROGRESS="stopped"
-fi
+
+        if [ "${WAN_TYPE:-pppoe}" = "dhcp" ]; then
+            if [ -n "$IP" ]; then
+                PPPOE_PROGRESS="connected"
+            else
+                PPPOE_PROGRESS="stopped"
+            fi
+        else
+            if [ -n "$IP" ]; then
+                PPPOE_PROGRESS="connected"
+            elif [ "$PPPOE_STATE" = "active" ]; then
+                PPPOE_PROGRESS="connecting"
+            elif [ "$PPPOE_STATE" = "failed" ]; then
+                PPPOE_PROGRESS="failed"
+            else
+                PPPOE_PROGRESS="stopped"
+            fi
+        fi
 
         if [ "$FIRST" -eq 0 ]; then
             echo ","
@@ -521,9 +573,11 @@ fi
 
         FIRST=0
 
-printf '  {"id":%s,"wan_id":%s,"mac":"%s","ppp_if":"%s","ip":"%s","state":"%s","pppoe_state":"%s","socks_port":%s,"http_port":%s,"user":"%s","proxy_enabled":"%s","macvlan_service":"%s","pppoe_service":"%s","socks_service":"%s","http_service":"%s"}' \
+printf '  {"id":%s,"wan_id":%s,"wan_type":"%s","egress_if":"%s","mac":"%s","ppp_if":"%s","ip":"%s","state":"%s","pppoe_state":"%s","socks_port":%s,"http_port":%s,"user":"%s","proxy_enabled":"%s","macvlan_service":"%s","pppoe_service":"%s","socks_service":"%s","http_service":"%s"}' \
             "$N" \
             "$WAN_ID" \
+	    "${WAN_TYPE:-pppoe}" \
+            "${EGRESS_IF:-}" \
             "$MAC" \
             "$PPP_IF" \
             "$IP" \
@@ -574,10 +628,19 @@ fi
             echo 'PROXY_ENABLED="yes"' >> "$CONF"
         fi
 
-        if ip -4 -o addr show dev "$PPP_IF" >/dev/null 2>&1; then
-            systemctl start "boxproxy-dante@${INSTANCE_ID}.service"
-            systemctl start "boxproxy-squid@${INSTANCE_ID}.service"
+        if /usr/local/lib/boxproxy/instance-egress \
+            "$INSTANCE_ID" >/dev/null 2>&1; then
+
+            systemctl start \
+                "boxproxy-dns@${INSTANCE_ID}.service"
+
+            systemctl start \
+                "boxproxy-dante@${INSTANCE_ID}.service"
+
+            systemctl start \
+                "boxproxy-squid@${INSTANCE_ID}.service"
         fi
+
     done
 
     echo "Proxy services enabled for WAN $TARGET_WAN"
@@ -792,6 +855,11 @@ wan-delete)
 
     /usr/local/lib/boxproxy/sync-pppoe-secrets
 
+    # Rebuild LAN routing after deleting WAN/instances so stale
+    # ip rule and iptables entries are removed.
+    /usr/local/lib/boxproxy/client-route-sync \
+        2>/dev/null || true
+
     echo "WAN $TARGET_WAN deleted"
     ;;
 
@@ -917,12 +985,47 @@ EOF
 
     chmod 600 "$WAN_CONF"
 
+    # DHCP WAN always owns exactly one proxy instance.
+    NEW_INSTANCE_ID=1
+
+    while [ -f "/etc/boxproxy/instances/${NEW_INSTANCE_ID}.conf" ]; do
+        NEW_INSTANCE_ID=$((NEW_INSTANCE_ID + 1))
+    done
+
+    echo "Creating Proxy $NEW_INSTANCE_ID for DHCP WAN $NEW_WAN_ID..."
+
+    /usr/local/lib/boxproxy/create-instance \
+        "$NEW_INSTANCE_ID" \
+        "$NEW_WAN_ID"
+
+    # DHCP WAN does not use macvlan or PPPoE services.
+    systemctl disable \
+        "boxproxy-macvlan@${NEW_INSTANCE_ID}.service" \
+        >/dev/null 2>&1 || true
+
+    systemctl disable \
+        "boxproxy-pppoe@${NEW_INSTANCE_ID}.service" \
+        >/dev/null 2>&1 || true
+
+    systemctl disable \
+        "boxproxy-dante@${NEW_INSTANCE_ID}.service" \
+        >/dev/null 2>&1 || true
+
+    systemctl disable \
+        "boxproxy-squid@${NEW_INSTANCE_ID}.service" \
+        >/dev/null 2>&1 || true
+
     echo "DHCP WAN $NEW_WAN_ID created"
     echo "Interface : $NEW_IF"
     echo "MAC       : $NEW_MAC"
-    echo "Networking has not been started yet"
-    ;;
+    echo "Proxy     : $NEW_INSTANCE_ID"
 
+    echo "Starting DHCP WAN $NEW_WAN_ID..."
+
+    "$0" wan-start "$NEW_WAN_ID"
+
+    echo "DHCP WAN $NEW_WAN_ID is ready"
+    ;;
 wan-add)
     NEW_IF="$ID"
     NEW_USER="$ARG3"

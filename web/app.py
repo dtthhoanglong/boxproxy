@@ -49,10 +49,50 @@ def read_wans():
         print(out)
         return []
 
+def read_ddns(wan_id):
+    code, out, err = run_cmd(
+        [
+            "sudo",
+            "/usr/local/lib/boxproxy/ddns-config",
+            "get",
+            str(wan_id)
+        ]
+    )
+
+    if code != 0:
+        print(f"DDNS config error for WAN {wan_id}:", err)
+
+        return {
+            "enabled": "no",
+            "provider": "noip",
+            "hostname": "",
+            "username": "",
+            "has_password": False,
+            "interval_sec": 60,
+        }
+
+    try:
+        return json.loads(out)
+    except Exception as e:
+        print(f"DDNS JSON parse error for WAN {wan_id}:", e)
+        print(out)
+
+        return {
+            "enabled": "no",
+            "provider": "noip",
+            "hostname": "",
+            "username": "",
+            "has_password": False,
+            "interval_sec": 60,
+        }
+
 @app.route("/")
 def index():
     proxies = read_instances()
     wans = read_wans()
+
+    for wan in wans:
+        wan["ddns"] = read_ddns(wan["wan_id"])
 
     return render_template(
         "index.html",
@@ -165,6 +205,79 @@ def wan_proxy(wan_id, action):
             BOXPROXY,
             allowed[action],
             str(wan_id)
+        ]
+    )
+
+    return redirect("/")
+
+@app.post("/wan-power/<int:wan_id>/<action>")
+def wan_power(wan_id, action):
+    allowed = {
+        "start": "wan-start",
+        "stop": "wan-stop",
+    }
+
+    if action not in allowed:
+        return "Invalid action", 400
+
+    run_cmd(
+        [
+            "sudo",
+            BOXPROXY,
+            allowed[action],
+            str(wan_id)
+        ]
+    )
+
+    return redirect("/")
+
+@app.post("/ddns-save/<int:wan_id>")
+def ddns_save(wan_id):
+    hostname = request.form.get("hostname", "").strip()
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "").strip()
+    interval_sec = request.form.get("interval_sec", "60").strip()
+
+    enabled = (
+        "yes"
+        if request.form.get("enabled") == "yes"
+        else "no"
+    )
+
+    if not hostname or not username:
+        return redirect("/")
+
+    if not interval_sec.isdigit():
+        return redirect("/")
+
+    if int(interval_sec) < 30:
+        return redirect("/")
+
+    run_cmd(
+        [
+            "sudo",
+            "/usr/local/lib/boxproxy/ddns-config",
+            "save",
+            str(wan_id),
+            hostname,
+            username,
+            password,
+            interval_sec,
+            enabled,
+        ]
+    )
+
+    return redirect("/")
+
+
+@app.post("/ddns-disable/<int:wan_id>")
+def ddns_disable(wan_id):
+    run_cmd(
+        [
+            "sudo",
+            "/usr/local/lib/boxproxy/ddns-config",
+            "disable",
+            str(wan_id),
         ]
     )
 
@@ -360,10 +473,27 @@ def routing_remove():
 @app.post("/wan-add")
 def wan_add():
     interface = request.form.get("interface", "").strip()
+    wan_type = request.form.get("wan_type", "pppoe").strip()
+
+    if not interface:
+        return redirect("/")
+
+    if wan_type == "dhcp":
+        run_cmd(
+            [
+                "sudo",
+                BOXPROXY,
+                "wan-add-dhcp",
+                interface
+            ]
+        )
+
+        return redirect("/")
+
     username = request.form.get("pppoe_user", "").strip()
     password = request.form.get("pppoe_password", "").strip()
 
-    if not interface or not username or not password:
+    if not username or not password:
         return redirect("/")
 
     run_cmd(
@@ -378,6 +508,7 @@ def wan_add():
     )
 
     return redirect("/")
+
 
 @app.get("/api/wan-status")
 def api_wan_status():

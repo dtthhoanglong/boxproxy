@@ -1,0 +1,46 @@
+#!/bin/bash
+
+STATE_DIR="/run/boxproxy/ddns"
+mkdir -p "$STATE_DIR"
+
+NOW=$(date +%s)
+
+for CONF in /etc/boxproxy/ddns/*.conf; do
+    [ -f "$CONF" ] || continue
+
+    WAN_ID=$(basename "$CONF" .conf)
+
+    unset ENABLED INTERVAL_SEC
+    . "$CONF"
+
+    [ "${ENABLED:-no}" = "yes" ] || continue
+
+    INTERVAL_SEC="${INTERVAL_SEC:-60}"
+
+    # Không cho cấu hình thấp hơn 30 giây.
+    if ! [[ "$INTERVAL_SEC" =~ ^[0-9]+$ ]] ||
+       [ "$INTERVAL_SEC" -lt 30 ]; then
+        INTERVAL_SEC=30
+    fi
+
+    CHECK_FILE="${STATE_DIR}/${WAN_ID}.last_check"
+    LAST_CHECK=0
+
+    if [ -s "$CHECK_FILE" ]; then
+        LAST_CHECK=$(cat "$CHECK_FILE" 2>/dev/null || echo 0)
+    fi
+
+    if ! [[ "$LAST_CHECK" =~ ^[0-9]+$ ]]; then
+        LAST_CHECK=0
+    fi
+
+    ELAPSED=$((NOW - LAST_CHECK))
+
+    if [ "$ELAPSED" -lt "$INTERVAL_SEC" ]; then
+        continue
+    fi
+
+    printf '%s\n' "$NOW" > "$CHECK_FILE"
+
+    /usr/local/lib/boxproxy/ddns-update "$WAN_ID" || true
+done

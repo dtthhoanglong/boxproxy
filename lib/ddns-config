@@ -1,0 +1,122 @@
+#!/bin/bash
+set -e
+
+ACTION="$1"
+WAN_ID="$2"
+
+CONF_DIR="/etc/boxproxy/ddns"
+CONF="${CONF_DIR}/${WAN_ID}.conf"
+
+case "$ACTION" in
+    get)
+        [ -n "$WAN_ID" ] || exit 1
+
+        if [ ! -f "$CONF" ]; then
+            printf '{"enabled":"no","provider":"noip","hostname":"","username":"","has_password":false,"interval_sec":60}\n'
+            exit 0
+        fi
+
+        unset PROVIDER HOSTNAME USERNAME PASSWORD ENABLED INTERVAL_SEC
+        . "$CONF"
+
+        [ -n "${PASSWORD:-}" ] &&
+            HAS_PASSWORD=true ||
+            HAS_PASSWORD=false
+
+        printf '{"enabled":"%s","provider":"%s","hostname":"%s","username":"%s","has_password":%s,"interval_sec":%s}\n' \
+            "${ENABLED:-no}" \
+            "${PROVIDER:-noip}" \
+            "${HOSTNAME:-}" \
+            "${USERNAME:-}" \
+            "$HAS_PASSWORD" \
+            "${INTERVAL_SEC:-60}"
+        ;;
+
+    save)
+        HOSTNAME="$3"
+        USERNAME="$4"
+        NEW_PASSWORD="$5"
+        INTERVAL_SEC="$6"
+        ENABLED="$7"
+
+        [ -n "$WAN_ID" ] || exit 1
+        [ -n "$HOSTNAME" ] || {
+            echo "Hostname required" >&2
+            exit 1
+        }
+        [ -n "$USERNAME" ] || {
+            echo "Username required" >&2
+            exit 1
+        }
+
+        if ! [[ "$INTERVAL_SEC" =~ ^[0-9]+$ ]] ||
+           [ "$INTERVAL_SEC" -lt 30 ]; then
+            echo "Interval must be at least 30 seconds" >&2
+            exit 1
+        fi
+
+        OLD_PASSWORD=""
+
+        if [ -f "$CONF" ]; then
+            unset PASSWORD
+            . "$CONF"
+            OLD_PASSWORD="${PASSWORD:-}"
+        fi
+
+        if [ -n "$NEW_PASSWORD" ]; then
+            PASSWORD="$NEW_PASSWORD"
+        else
+            PASSWORD="$OLD_PASSWORD"
+        fi
+
+        [ -n "$PASSWORD" ] || {
+            echo "Password required" >&2
+            exit 1
+        }
+
+        case "$ENABLED" in
+            yes|no)
+                ;;
+            *)
+                ENABLED="no"
+                ;;
+        esac
+
+        mkdir -p "$CONF_DIR"
+
+        cat > "$CONF" <<EOF
+PROVIDER="noip"
+HOSTNAME="$HOSTNAME"
+USERNAME="$USERNAME"
+PASSWORD="$PASSWORD"
+ENABLED="$ENABLED"
+INTERVAL_SEC="$INTERVAL_SEC"
+EOF
+
+        chmod 600 "$CONF"
+
+        # Cho phép lần kiểm tra kế tiếp chạy ngay sau khi Save.
+        rm -f "/run/boxproxy/ddns/${WAN_ID}.last_check"
+
+        echo "DDNS config saved for WAN $WAN_ID"
+        ;;
+
+    disable)
+        [ -f "$CONF" ] || exit 0
+
+        if grep -q '^ENABLED=' "$CONF"; then
+            sed -i 's/^ENABLED=.*/ENABLED="no"/' "$CONF"
+        else
+            echo 'ENABLED="no"' >> "$CONF"
+        fi
+
+        chmod 600 "$CONF"
+
+        echo "DDNS disabled for WAN $WAN_ID"
+        ;;
+
+    *)
+        echo "Usage: ddns-config {get|save|disable} <wan_id> ..." >&2
+        exit 1
+        ;;
+esac

@@ -1,0 +1,13 @@
+[Unit]
+Description=BoxProxy WAN Restore
+After=network-online.target
+Wants=network-online.target
+Before=boxproxy-client-routing.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/boxproxy/wan-restore
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

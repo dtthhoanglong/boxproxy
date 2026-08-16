@@ -1,0 +1,103 @@
+#!/bin/bash
+set -e
+
+WAN_ID="$1"
+DDNS_CONF="/etc/boxproxy/ddns/${WAN_ID}.conf"
+
+[ -n "$WAN_ID" ] || {
+    echo "Usage: ddns-update <wan_id>" >&2
+    exit 1
+}
+
+[ -f "$DDNS_CONF" ] || {
+    echo "DDNS config not found for WAN $WAN_ID" >&2
+    exit 1
+}
+
+unset PROVIDER HOSTNAME USERNAME PASSWORD ENABLED
+. "$DDNS_CONF"
+
+[ "${ENABLED:-no}" = "yes" ] || exit 0
+
+[ "$PROVIDER" = "noip" ] || {
+    echo "Unsupported DDNS provider: $PROVIDER" >&2
+    exit 1
+}
+
+# Tìm proxy có ID nhỏ nhất thuộc WAN này.
+INSTANCE_ID=""
+
+for CONF in /etc/boxproxy/instances/*.conf; do
+    [ -f "$CONF" ] || continue
+
+    INSTANCE_WAN=$(grep '^WAN_ID=' "$CONF" \
+        | cut -d= -f2 \
+        | tr -d '"')
+
+    [ "$INSTANCE_WAN" = "$WAN_ID" ] || continue
+
+    ID=$(basename "$CONF" .conf)
+
+    if [ -z "$INSTANCE_ID" ] || [ "$ID" -lt "$INSTANCE_ID" ]; then
+        INSTANCE_ID="$ID"
+    fi
+done
+
+[ -n "$INSTANCE_ID" ] || {
+    echo "No proxy instance found for WAN $WAN_ID" >&2
+    exit 1
+}
+
+PUBLIC_IP=$(
+    /usr/local/lib/boxproxy/instance-public-ip "$INSTANCE_ID"
+)
+
+[ -n "$PUBLIC_IP" ] || {
+    echo "No public IPv4 found for WAN $WAN_ID" >&2
+    exit 1
+}
+
+STATE_DIR="/run/boxproxy/ddns"
+STATE_FILE="${STATE_DIR}/${WAN_ID}.last_ip"
+
+mkdir -p "$STATE_DIR"
+
+LAST_IP=""
+
+if [ -s "$STATE_FILE" ]; then
+    LAST_IP=$(cat "$STATE_FILE")
+fi
+
+if [ "$PUBLIC_IP" = "$LAST_IP" ]; then
+    echo "WAN $WAN_ID DDNS unchanged: $PUBLIC_IP"
+    exit 0
+fi
+
+RESPONSE=$(
+
+    curl \
+        -4 \
+        --silent \
+        --show-error \
+        --max-time 15 \
+        --user "${USERNAME}:${PASSWORD}" \
+        --user-agent "BoxProxy-DDNS/2.0 admin@example.invalid" \
+        "https://dynupdate.no-ip.com/nic/update?hostname=${HOSTNAME}&myip=${PUBLIC_IP}"
+)
+
+case "$RESPONSE" in
+    good\ *|nochg\ *)
+        printf '%s\n' "$PUBLIC_IP" > "$STATE_FILE"
+        chmod 600 "$STATE_FILE"
+
+        echo "WAN $WAN_ID DDNS updated"
+        echo "Hostname  : $HOSTNAME"
+        echo "Public IP : $PUBLIC_IP"
+        echo "No-IP     : $RESPONSE"
+        ;;
+
+    *)
+        echo "No-IP update failed: $RESPONSE" >&2
+        exit 1
+        ;;
+esac

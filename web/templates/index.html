@@ -256,49 +256,69 @@ input {
     </div>
 
     <form method="post"
-          action="/wan-add"
-          class="wan-config">
+      action="/wan-add"
+      class="wan-config">
 
-        <div>
-            <strong>Interface:</strong>
+    <div>
+        <strong>Interface:</strong>
 
-            <select
-                name="interface"
-                id="freeInterfaceSelect"
-                required>
-            </select>
-        </div>
+        <select
+            name="interface"
+            id="freeInterfaceSelect"
+            required>
+        </select>
+    </div>
 
-        <div>
-            <strong>PPPoE User:</strong>
+    <div>
+        <strong>WAN Type:</strong>
 
-            <input
-                type="text"
-                name="pppoe_user"
-                required>
-        </div>
+        <select
+            name="wan_type"
+            id="addWanType"
+            onchange="updateAddWanType()">
 
-        <div>
-            <strong>PPPoE Password:</strong>
+            <option value="pppoe">
+                PPPoE
+            </option>
 
-            <input
-                type="password"
-                name="pppoe_password"
-                required>
-        </div>
+            <option value="dhcp">
+                DHCP
+            </option>
+        </select>
+    </div>
 
-        <div class="wan-buttons">
-            <button type="submit">
-                Create WAN
-            </button>
+    <div id="addWanPppoeUser">
+        <strong>PPPoE User:</strong>
 
-            <button type="button"
-                    onclick="toggleAddWan()">
-                Cancel
-            </button>
-        </div>
+        <input
+            type="text"
+            name="pppoe_user"
+            id="addWanPppoeUserInput"
+            required>
+    </div>
 
-    </form>
+    <div id="addWanPppoePassword">
+        <strong>PPPoE Password:</strong>
+
+        <input
+            type="password"
+            name="pppoe_password"
+            id="addWanPppoePasswordInput"
+            required>
+    </div>
+
+    <div class="wan-buttons">
+        <button type="submit">
+            Create WAN
+        </button>
+
+        <button type="button"
+                onclick="toggleAddWan()">
+            Cancel
+        </button>
+    </div>
+
+</form>
 
 </div>
 
@@ -311,6 +331,22 @@ input {
     <div class="session-title">
         WAN {{ w.wan_id }} — {{ w.interface }}
     </div>
+    <div class="wan-config">
+
+        <div>
+            <strong>WAN Type:</strong>
+            <span>
+                {% if w.wan_type == "dhcp" %}
+                    DHCP
+                {% else %}
+                    PPPoE
+                {% endif %}
+            </span>
+        </div>
+
+    </div>
+
+{% if w.wan_type != "dhcp" %}
 
 <form method="post"
       action="/wan-save/{{ w.wan_id }}"
@@ -361,12 +397,32 @@ input {
 
 </form>
 
+{% endif %}
 <div class="wan-buttons">
+{% if w.wan_type != "dhcp" %}
 
     <button type="submit"
             form="wan-save-{{ w.wan_id }}">
         Save WAN
     </button>
+{% endif %}
+{% if w.wan_type == "dhcp" %}
+
+<form method="post"
+      action="/wan-power/{{ w.wan_id }}/start">
+    <button type="submit">
+        Start WAN
+    </button>
+</form>
+
+<form method="post"
+      action="/wan-power/{{ w.wan_id }}/stop">
+    <button type="submit">
+        Stop WAN
+    </button>
+</form>
+
+{% endif %}
 
     <form method="post"
       id="wan-proxy-form-{{ w.wan_id }}"
@@ -394,6 +450,7 @@ input {
 
 </div>
 
+{% if w.wan_type != "dhcp" %}
 <form method="post"
       action="/set-count/{{ w.wan_id }}"
       class="wan-count">
@@ -409,13 +466,115 @@ input {
 
     <button type="submit">Apply</button>
 </form>
+
+{% endif %}
+
+<div class="wan-config"
+     style="margin-top:18px;">
+
+    <div class="session-title">
+        Dynamic DNS
+    </div>
+
+</div>
+
+<form method="post"
+      action="/ddns-save/{{ w.wan_id }}"
+      class="wan-config">
+
+    <div>
+        <strong>Enable DDNS:</strong>
+
+        <input
+            type="checkbox"
+            name="enabled"
+            value="yes"
+            {% if w.ddns.enabled == "yes" %}checked{% endif %}>
+    </div>
+
+    <div>
+        <strong>Provider:</strong>
+
+        <select name="provider">
+            <option value="noip"
+                    {% if w.ddns.provider == "noip" %}selected{% endif %}>
+                No-IP
+            </option>
+        </select>
+    </div>
+
+    <div>
+        <strong>Hostname:</strong>
+
+        <input
+            type="text"
+            name="hostname"
+            value="{{ w.ddns.hostname }}"
+            placeholder="example.ddns.net"
+            required>
+    </div>
+
+    <div>
+        <strong>Username:</strong>
+
+        <input
+            type="text"
+            name="username"
+            value="{{ w.ddns.username }}"
+            required>
+    </div>
+
+    <div>
+        <strong>Password:</strong>
+
+        <input
+            type="password"
+            name="password"
+            placeholder="{% if w.ddns.has_password %}Leave blank to keep current{% else %}Enter DDNS password{% endif %}">
+    </div>
+
+    <div>
+        <strong>Check Interval:</strong>
+
+        <input
+            type="number"
+            name="interval_sec"
+            min="30"
+            value="{{ w.ddns.interval_sec }}"
+            required>
+
+        <span>seconds</span>
+    </div>
+
+    <div class="wan-buttons">
+        <button type="submit">
+            Save DDNS
+        </button>
+    </div>
+
+</form>
+
+{% if w.ddns.enabled == "yes" %}
+
+<form method="post"
+      action="/ddns-disable/{{ w.wan_id }}"
+      style="margin-top:8px;">
+
+    <button type="submit">
+        Disable DDNS
+    </button>
+
+</form>
+
+{% endif %}
+
 </div>
 
 {% endfor %}
 
 </div>
 
-<h2>PPPoE Sessions</h2>
+<h2>Proxy Sessions</h2>
 
 {% for p in proxies %}
 
@@ -436,18 +595,14 @@ input {
     </span>
 </div>
 
-        <div class="info-item">
-    <strong>PPPoE:</strong>
+<div class="info-item">
+    <strong>WAN:</strong>
 
-    <span id="pppoe-{{ p.id }}">
-        {% if p.pppoe_state == "connected" %}
-            <span class="status online">connected</span>
-        {% elif p.pppoe_state == "connecting" %}
-            <span class="status connecting">connecting</span>
-        {% elif p.pppoe_state == "failed" %}
-            <span class="status offline">failed</span>
+    <span id="wan-state-{{ p.id }}">
+        {% if p.wan_type == "dhcp" %}
+            DHCP / {{ p.egress_if }}
         {% else %}
-            <span class="status offline">stopped</span>
+            PPPoE / {{ p.ppp_if }}
         {% endif %}
     </span>
 </div>
@@ -502,6 +657,7 @@ input {
 
     <div class="actions">
 
+        {% if p.wan_type != "dhcp" %}
         <form method="post"
               action="/action/{{ p.id }}/start">
             <button type="submit">Start</button>
@@ -521,7 +677,7 @@ input {
               action="/action/{{ p.id }}/change-mac">
             <button type="submit">Change MAC</button>
         </form>
-
+    {% endif %}
     <form method="post"
       id="proxy-form-{{ p.id }}"
       action="{% if p.proxy_enabled == 'yes' %}/action/{{ p.id }}/proxy-disable{% else %}/action/{{ p.id }}/proxy-enable{% endif %}">
@@ -719,12 +875,40 @@ async function loadFreeInterfaces() {
     }
 }
 
+function updateAddWanType() {
+    const type =
+        document.getElementById('addWanType').value;
+
+    const userRow =
+        document.getElementById('addWanPppoeUser');
+
+    const passwordRow =
+        document.getElementById('addWanPppoePassword');
+
+    const userInput =
+        document.getElementById('addWanPppoeUserInput');
+
+    const passwordInput =
+        document.getElementById('addWanPppoePasswordInput');
+
+    const isPppoe = type === 'pppoe';
+
+    userRow.style.display =
+        isPppoe ? 'flex' : 'none';
+
+    passwordRow.style.display =
+        isPppoe ? 'flex' : 'none';
+
+    userInput.required = isPppoe;
+    passwordInput.required = isPppoe;
+}
 
 async function toggleAddWan() {
     const box = document.getElementById('addWanBox');
 
     if (box.style.display === 'none') {
         await loadFreeInterfaces();
+        updateAddWanType();
         box.style.display = 'block';
     } else {
         box.style.display = 'none';
@@ -849,7 +1033,7 @@ async function refreshProxyStatus() {
 
         for (const p of list) {
             const status = document.getElementById('status-' + p.id);
-            const pppoe = document.getElementById('pppoe-' + p.id);
+	    const wanState = document.getElementById('wan-state-' + p.id);
             const ip = document.getElementById('ip-' + p.id);
             const socks = document.getElementById('socks-' + p.id);
             const http = document.getElementById('http-' + p.id);
@@ -866,9 +1050,18 @@ const proxyButton =
                     'status ' + (p.state === 'online' ? 'online' : 'offline');
             }
 
-            if (pppoe) {
-                pppoe.innerHTML = renderPppoeState(p.pppoe_state);
-            }
+	    if (wanState) {
+    if (p.wan_type === 'dhcp') {
+        wanState.textContent =
+            'DHCP / ' + (p.egress_if || '-');
+    } else {
+        wanState.innerHTML =
+            'PPPoE / ' +
+            (p.ppp_if || '-') +
+            ' — ' +
+            renderPppoeState(p.pppoe_state);
+    }
+}
 
             if (ip) {
                 ip.textContent = p.ip || '-';

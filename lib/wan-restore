@@ -1,0 +1,19 @@
+#!/bin/bash
+set -e
+
+for WAN_CONF in /etc/boxproxy/wans/*.conf; do
+    [ -f "$WAN_CONF" ] || continue
+
+    unset WAN_ID WAN_TYPE
+    . "$WAN_CONF"
+
+    WAN_TYPE="${WAN_TYPE:-pppoe}"
+
+    [ "$WAN_TYPE" = "dhcp" ] || continue
+
+    echo "Restoring DHCP WAN $WAN_ID..."
+
+    /usr/local/sbin/boxproxy wan-start "$WAN_ID"
+done
+
+echo "BoxProxy WAN restore completed"
