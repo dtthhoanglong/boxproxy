@@ -1,802 +1,609 @@
-# BoxProxy V1 – Hướng dẫn cài đặt
+# BoxProxy V2 – Hướng dẫn cài đặt và nâng cấp từ V1
 
-BoxProxy V1 chạy trên **Ubuntu Server 22.04 LTS** và cung cấp:
+> Áp dụng cho nhánh `v2-dev`.
 
-* Nhiều phiên PPPoE độc lập trên một WAN vật lý bằng `macvlan`.
-* SOCKS5 proxy bằng **Dante**.
-* HTTP proxy bằng **Squid**.
-* Mỗi PPPoE session có public IPv4 riêng.
-* Start / Stop / Restart từng PPPoE session.
-* Change MAC để reconnect PPPoE và lấy IP mới.
-* Change Password ngẫu nhiên cho từng proxy.
-* Bật / tắt proxy độc lập với PPPoE.
-* Quản lý nhiều WAN.
-* Định tuyến máy LAN theo **MAC address** sang PPPoE session được chỉ định.
-* WebUI quản lý tại cổng `8080`.
+## 1. Install V1 có dùng được cho V2 không?
 
----
+Có thể dùng phần lớn `install.sh` V1 làm nền trên **máy mới**, vì installer hiện copy toàn bộ `lib/*`, WebUI và systemd units. Tuy nhiên V2 có thêm WAN restore, DDNS, helper public-IP/egress và quyền sudo cho `ddns-config`, nên cần các bước bổ sung bên dưới.
 
-## 1. Yêu cầu hệ thống
+Với **máy V1 đang chạy**, không chạy lại `install.sh` vì installer có thể ghi lại `settings.conf`, DHCP và network config. Hãy dùng phần nâng cấp tại chỗ ở cuối tài liệu.
 
-Khuyến nghị:
-
-* Ubuntu Server 22.04 LTS.
-* Tối thiểu 2 interface mạng:
-
-  * WAN: nối tới modem/ONT đang Bridge PPPoE.
-  * LAN: mạng quản trị và mạng client.
-* Tài khoản có quyền `sudo`.
-* Có Internet trong quá trình cài đặt package.
-
-Ví dụ hệ thống test:
-
-```text
-WAN: ens33
-LAN: ens34
-LAN IP: 10.10.10.1/24
-WebUI: http://10.10.10.1:8080
-```
-
-Tên interface trên máy thật có thể khác. `install.sh` sẽ tự phát hiện và hiển thị các interface mạng hiện có để người cài chọn WAN/LAN, vì vậy không bắt buộc phải kiểm tra thủ công trước khi chạy installer.
-
----
-
-## 2. Clone BoxProxy từ GitHub
-
-Repository BoxProxy là public. Trên máy BoxProxy mới nên clone bằng HTTPS để không cần cấu hình SSH key GitHub:
+## 2. Cài mới BoxProxy V2
 
 ```bash
 cd ~
-git clone https://github.com/dtthhoanglong/boxproxy.git
-cd boxproxy
+git clone -b v2-dev --single-branch https://github.com/dtthhoanglong/boxproxy.git
+cd ~/boxproxy
+git branch --show-current
 ```
 
-SSH chỉ cần cấu hình nếu máy này được sử dụng để commit/push code lên GitHub.
+Kết quả phải là:
 
----
-
-## 3. Tắt cloud-init
-
-BoxProxy tự quản lý cấu hình network. `cloud-init` có thể ghi lại Netplan sau reboot và làm thay đổi WAN/LAN đã cấu hình.
+```text
+v2-dev
+```
 
 Tắt cloud-init:
 
 ```bash
 sudo touch /etc/cloud/cloud-init.disabled
-```
-
-Disable các service:
-
-```bash
 sudo systemctl disable cloud-init-local.service
 sudo systemctl disable cloud-init.service
 sudo systemctl disable cloud-config.service
 sudo systemctl disable cloud-final.service
 ```
 
-Có thể kiểm tra:
-
-```bash
-systemctl is-enabled cloud-init-local.service
-systemctl is-enabled cloud-init.service
-systemctl is-enabled cloud-config.service
-systemctl is-enabled cloud-final.service
-```
-
-Không được để `cloud-init` tự tạo lại cấu hình mạng của BoxProxy sau reboot.
-
----
-
-## 4. Tắt network wait-online
-
-Trong quá trình test đã phát hiện Ubuntu có thể chờ interface mạng quá lâu khi boot/shutdown nếu một interface không có carrier hoặc PPPoE chưa kết nối.
-
-BoxProxy không cần chờ `systemd-networkd-wait-online`.
-
-Disable bằng:
-
-```bash
-sudo systemctl mask systemd-networkd-wait-online.service
-```
-
-Kiểm tra:
-
-```bash
-systemctl is-enabled systemd-networkd-wait-online.service
-```
-
-Kết quả mong muốn:
-
-```text
-masked
-```
-
-`install.sh` của BoxProxy V1 cũng thực hiện bước này tự động.
-
----
-
-## 5. Chạy installer
-
-Trong thư mục repo:
+Chạy installer nền:
 
 ```bash
 cd ~/boxproxy
 sudo bash install.sh
 ```
 
-Installer tự phát hiện và hiển thị các network interface hiện có. Người cài chỉ cần chọn interface dùng làm WAN và LAN khi được hỏi.
+Chưa reboot ngay.
 
-Ví dụ:
+## 3. Bổ sung bắt buộc cho V2
 
-```text
-Available network interfaces:
-
-  ens33  UP
-  ens34  DOWN
-```
-
-Thông thường trên máy mới, interface đang dùng Internet để cài package là WAN; interface còn lại được chọn làm LAN.
-
-Installer sẽ cài và cấu hình các thành phần cần thiết, bao gồm:
-
-- PPP / PPPoE
-- Dante
-- Squid
-- DHCP server
-- BoxProxy CLI
-- BoxProxy WebUI
-- systemd services
-- PPP hooks
-- routing scripts
-- client MAC routing
-- IPv4 forwarding
-- network configuration cần thiết
-
-Installer cũng kiểm tra syntax các script trước khi hoàn tất.
-
-Sau khi installer hoàn tất, cấu hình Netplan đã được tạo nhưng **không được apply trực tiếp** để tránh làm mất phiên SSH đang dùng để cài đặt.
-
-Reboot máy:
+Tạo thư mục DDNS:
 
 ```bash
-sudo reboot
+sudo install -d -m 700 /etc/boxproxy/ddns
 ```
 
-Sau reboot, LAN mặc định phải có địa chỉ:
-
-```text
-10.10.10.1/24
-```
-
-WebUI:
-
-```text
-http://10.10.10.1:8080
-```
-
-Nếu máy quản trị nằm trong LAN BoxProxy, có thể SSH lại bằng:
+Kiểm tra helper:
 
 ```bash
-ssh ubuntu@10.10.10.1
+for f in   instance-egress   instance-public-ip   ddns-config   ddns-update   ddns-sync-all   wan-restore; do
+  sudo test -x "/usr/local/lib/boxproxy/$f" && echo "OK: $f" || echo "MISSING: $f"
+done
 ```
 
-Không cần đăng nhập trực tiếp trên console lần đầu để kích hoạt SSH. SSH server và interface LAN được khởi động tự động trong quá trình boot.
-
----
-
-## 6. Squid và shutdown/reboot
-
-Package `squid` của Ubuntu có service mặc định:
-
-```text
-squid.service
-```
-
-BoxProxy V1 không sử dụng service Squid mặc định này. Mỗi HTTP proxy được quản lý độc lập bằng template service:
-
-```text
-boxproxy-squid@.service
-```
-
-`install.sh` tự động disable và mask `squid.service`. Việc này tránh Squid mặc định tự chạy trên port `3128` và tránh làm shutdown/reboot phải chờ lâu.
-
-Sau khi cài có thể kiểm tra:
+Xem user WebUI:
 
 ```bash
-systemctl is-enabled squid.service
-systemctl is-active squid.service
+systemctl cat boxproxy-web.service | grep '^User='
 ```
 
-Kết quả mong muốn:
-
-```text
-masked
-inactive
-```
-
-Cấu hình Squid của từng proxy sử dụng:
-
-```text
-shutdown_lifetime 1 second
-```
-
-để từng instance Squid dừng nhanh khi Stop proxy, Restart PPPoE, reboot hoặc shutdown.
-
-Trước khi tạo proxy, `/etc/boxproxy/squid/` có thể chưa có file `.conf`. Khi đó kiểm tra template sinh cấu hình:
+Mở sudoers:
 
 ```bash
-grep -n 'shutdown_lifetime' \
-    ~/boxproxy/lib/squid-generate \
-    /usr/local/lib/boxproxy/squid-generate
+sudo visudo -f /etc/sudoers.d/boxproxy-web
 ```
 
-Kết quả phải chứa:
+Ví dụ WebUI chạy bằng `ubuntu`, file cần có:
 
 ```text
-shutdown_lifetime 1 second
+ubuntu ALL=(root) NOPASSWD: /usr/local/sbin/boxproxy
+ubuntu ALL=(root) NOPASSWD: /usr/local/lib/boxproxy/ddns-config
 ```
-
-Sau khi đã tạo ít nhất một proxy, có thể kiểm tra config runtime:
-
-```bash
-sudo grep shutdown_lifetime /etc/boxproxy/squid/*.conf
-```
-
-Không nên bỏ `shutdown_lifetime 1 second` khỏi `lib/squid-generate`.
-
----
-
-## 7. TCP MSS khi LAN routing qua PPPoE
-
-PPPoE sử dụng MTU `1492`, trong khi LAN thông thường sử dụng MTU `1500`.
-
-Trong quá trình test MAC-based client routing, client vẫn có Internet và ping bình thường nhưng:
-
-- Firefox mở trang rất chậm.
-- Download rất chậm.
-- Fast.com không chạy đúng.
-- Speedtest không chạy đúng.
-
-Nguyên nhân là TCP MSS của traffic LAN đi ra PPPoE.
-
-BoxProxy V1 xử lý bằng rule:
-
-```bash
-iptables -t mangle -A FORWARD \
-    -i "$LAN_IF" \
-    -o ppp+ \
-    -p tcp \
-    --tcp-flags SYN,RST SYN \
-    -m comment \
-    --comment BOXPROXY-MSS \
-    -j TCPMSS \
-    --set-mss 1452
-```
-
-Rule được quản lý bởi:
-
-```text
-/usr/local/lib/boxproxy/client-route-sync
-```
-
-và service:
-
-```text
-boxproxy-client-routing.service
-```
-
-Không cần thêm rule thủ công sau mỗi reboot.
-
-Lưu ý: ngay sau clean-install, trước khi client routing được áp dụng, rule `BOXPROXY-MSS` có thể chưa xuất hiện trong runtime iptables. Sau khi cấu hình LAN Routing, `client-route-sync` sẽ tạo rule này.
 
 Kiểm tra:
 
 ```bash
-sudo iptables -t mangle -S FORWARD
+sudo visudo -c
 ```
 
-Khi LAN Routing đang hoạt động phải thấy rule tương tự:
-
-```text
--A FORWARD -i <LAN_IF> -o ppp+ -p tcp -m tcp --tcp-flags SYN,RST SYN -m comment --comment BOXPROXY-MSS -j TCPMSS --set-mss 1452
-```
-
-Rule phải chỉ xuất hiện **một lần**.
-
----
-
-## 8. Dante SOCKS5
-
-Dante tạo SOCKS5 proxy cho từng PPPoE session.
-
-Proxy được listen trên:
-
-```text
-LAN_IP:SOCKS_PORT
-PUBLIC_PPP_IP:SOCKS_PORT
-```
-
-Ví dụ Proxy #1:
-
-```text
-10.10.10.1:3901
-27.x.x.x:3901
-```
-
-Proxy #2:
-
-```text
-10.10.10.1:3902
-116.x.x.x:3902
-```
-
-Dante sử dụng username/password authentication.
-
-SOCKS5 UDP Associate cũng được hỗ trợ.
-
-Trong quá trình test, SOCKS5 TCP authentication và UDP relay đã hoạt động thành công.
-
----
-
-## 9. Squid HTTP Proxy
-
-Squid của mỗi proxy listen trên cả:
-
-```text
-LAN_IP:HTTP_PORT
-PUBLIC_PPP_IP:HTTP_PORT
-```
-
-Ví dụ:
-
-```text
-Proxy #1 HTTP: 10.10.10.1:4901
-Proxy #2 HTTP: 10.10.10.1:4902
-```
-
-và đồng thời listen trên IPv4 public tương ứng.
-
-HTTP proxy yêu cầu authentication.
-
-Traffic outbound được bind vào đúng public IPv4 của PPPoE session:
-
-```text
-tcp_outgoing_address <PPP_PUBLIC_IP>
-```
-
----
-
-## 10. WebUI
-
-Sau khi cài đặt:
-
-```text
-http://10.10.10.1:8080
-```
-
-WebUI hiện hỗ trợ:
-
-* WAN Configuration
-* Add WAN
-* Delete WAN
-* Đổi interface WAN
-* PPPoE username/password
-* Proxy Count
-* Proxy ON/OFF
-* Start PPPoE
-* Stop PPPoE
-* Restart PPPoE
-* Change MAC
-* Change Password
-* Copy SOCKS5
-* Copy HTTP
-* Copy All SOCKS5
-* LAN Routing theo MAC
-
----
-
-## 11. Change Password
-
-Password proxy được **sinh ngẫu nhiên tự động**.
-
-Không cần nhập password thủ công.
-
-Khi bấm:
-
-```text
-Change Password
-```
-
-BoxProxy sẽ:
-
-1. Sinh password mới.
-2. Cập nhật credential.
-3. Cập nhật Dante/Squid.
-4. Restart proxy service cần thiết.
-5. WebUI hiển thị credential mới.
-
----
-
-## 12. Change MAC
-
-Mỗi PPPoE session chạy qua một `macvlan` riêng.
-
-Ví dụ:
-
-```text
-mvppp01
-mvppp02
-mvppp03
-```
-
-Change MAC sẽ:
-
-1. Stop PPPoE session tương ứng.
-2. Đổi MAC của macvlan.
-3. Start lại PPPoE.
-4. Chờ public IPv4.
-5. Khởi động lại proxy theo IPv4 mới.
-
-ISP có thể tạm thời không trả PADO nếu reconnect PPPoE liên tục.
-
-Log có thể xuất hiện:
-
-```text
-Timeout waiting for PADO packets
-Unable to complete PPPoE Discovery
-```
-
-Đây không nhất thiết là lỗi BoxProxy.
-
-`pppd` có thể tiếp tục retry và PPPoE sẽ kết nối lại khi ISP trả PADO.
-
----
-
-## 13. LAN Routing theo MAC
-
-BoxProxy có thể ép một client LAN đi ra một PPPoE session cụ thể dựa trên MAC address.
-
-Client có thể được gán Static LAN IP trong WebUI.
-
-DHCP dynamic sử dụng dải:
-
-```text
-10.10.10.2 - 10.10.10.100
-```
-
-Static LAN IP sử dụng dải:
-
-```text
-10.10.10.101 - 10.10.10.254
-```
-
-Khi một MAC đã được gán Static LAN IP, WebUI phải ưu tiên hiển thị Static LAN IP đó thay cho DHCP/neighbor IP cũ.
-
-Cùng một MAC chỉ được xuất hiện **một lần** trong danh sách LAN Device Routing. IPv4 link-local `169.254.x.x` không được hiển thị.
-
-Ví dụ:
-
-```text
-Client MAC:
-00:0c:29:53:26:2e
-
-Client IP:
-10.10.10.101
-
-Proxy:
-Proxy #1
-
-PPP:
-ppp01
-
-Routing Table:
-101
-
-Mark:
-10001
-```
-
-Client không cần cấu hình SOCKS5 hoặc HTTP proxy.
-
-Toàn bộ traffic Internet thông thường sẽ được NAT qua PPPoE session được chỉ định.
-
-Có thể đổi client sang PPPoE khác từ WebUI. Sau khi đổi, kiểm tra public IPv4 từ client để xác nhận traffic đã đi qua PPPoE mới.
-
----
-
-## 14. Kiểm tra PPPoE
+Enable service V2:
 
 ```bash
-ip -br addr
+sudo systemctl daemon-reload
+sudo systemctl enable boxproxy-web.service
+sudo systemctl enable boxproxy-client-routing.service
+sudo systemctl enable boxproxy-wan-restore.service
+sudo systemctl enable boxproxy-ddns.timer
+sudo systemctl enable isc-dhcp-server.service
 ```
 
-Ví dụ:
+Không cần enable `boxproxy-ddns.service` trực tiếp; timer sẽ gọi service này.
 
-```text
-mvppp01@ens33    UP
-ppp01            UNKNOWN    27.x.x.x
-
-mvppp02@ens33    UP
-ppp02            UNKNOWN    116.x.x.x
-```
-
-Kiểm tra process:
-
-```bash
-ps aux | grep '[p]ppd'
-```
-
----
-
-## 15. Kiểm tra Dante và Squid
-
-```bash
-ps aux | grep -E 'danted|squid' | grep -v grep
-```
-
-Kiểm tra port:
-
-```bash
-sudo ss -lntup | grep -E 'danted|squid'
-```
-
-Ví dụ:
-
-```text
-10.10.10.1:3901   SOCKS5 #1
-10.10.10.1:3902   SOCKS5 #2
-
-10.10.10.1:4901   HTTP #1
-10.10.10.1:4902   HTTP #2
-```
-
-Ngoài LAN IP, proxy đang bật còn listen trên public PPPoE IPv4 tương ứng.
-
----
-
-## 16. Kiểm tra client routing
-
-Kiểm tra policy routing:
-
-```bash
-ip rule show
-```
-
-Ví dụ:
-
-```text
-1001: from <PPP1_PUBLIC_IP> lookup 101
-1002: from <PPP2_PUBLIC_IP> lookup 102
-2001: from all fwmark 0x2711 lookup 101
-2002: from all fwmark 0x2712 lookup 102
-```
-
-Kiểm tra routing table:
-
-```bash
-ip route show table 101
-ip route show table 102
-```
-
-Ví dụ:
-
-```text
-default dev ppp01 scope link metric 10
-```
-
-và:
-
-```text
-default dev ppp02 scope link metric 10
-```
-
----
-
-## 17. Kiểm tra rp_filter
-
-BoxProxy multi-WAN/policy routing sử dụng loose reverse path filtering.
-
-Kiểm tra:
-
-```bash
-sysctl net.ipv4.conf.all.rp_filter
-sysctl net.ipv4.conf.default.rp_filter
-```
-
-Giá trị mong muốn:
-
-```text
-2
-```
-
-Không nên dùng strict mode `1` cho mô hình nhiều PPPoE/policy routing này.
-
----
-
-## 18. Reboot test sau khi cài
-
-Sau khi hoàn tất cấu hình WAN, PPPoE, proxy và LAN Routing nên reboot:
-
-```bash
-sudo reboot
-```
-
-Sau khi máy lên lại kiểm tra:
-
-```bash
-systemctl --failed
-```
-
-Kết quả mong muốn:
-
-```text
-0 loaded units listed.
-```
-
-Kiểm tra network và các thành phần BoxProxy:
-
-```bash
-ip -br addr
-sudo systemctl status boxproxy-client-routing.service --no-pager
-sudo iptables -t mangle -S FORWARD
-ps aux | grep '[p]ppd'
-sudo ss -lntup | grep -E 'danted|squid'
-```
-
-Kiểm tra service Squid mặc định vẫn bị tắt:
-
-```bash
-systemctl is-enabled squid.service
-systemctl is-active squid.service
-```
-
-Kết quả mong muốn:
-
-```text
-masked
-inactive
-```
-
-Cần xác nhận:
-
-- PPPoE tự khởi động lại.
-- Proxy tự khởi động lại.
-- Public IPv4 xuất hiện.
-- SOCKS5 và HTTP proxy hoạt động.
-- Static LAN IP vẫn đúng.
-- Một MAC chỉ xuất hiện một lần trong LAN Routing.
-- MAC client routing được khôi phục.
-- Có thể đổi client giữa các PPPoE session và public IPv4 đổi tương ứng.
-- `BOXPROXY-MSS` xuất hiện đúng một lần khi LAN Routing đang hoạt động.
-- Client LAN truy cập Internet, Fast.com và Speedtest bình thường.
-- WebUI hoạt động.
-- `systemctl --failed` không có service lỗi.
-
----
-
-## 19. Shutdown
-
-Shutdown:
-
-```bash
-sudo poweroff
-```
-
-BoxProxy đã được cấu hình để tránh các nguyên nhân từng gây shutdown chậm:
-
-- `systemd-networkd-wait-online` được mask.
-- Package default `squid.service` được disable/mask.
-- Mỗi Squid instance của BoxProxy sử dụng:
-
-```text
-shutdown_lifetime 1 second
-```
-
-Do đó shutdown/reboot không nên phải chờ Squid mặc định khoảng 30 giây.
-
----
-
-## 20. Lưu ý khi test nhiều PPPoE
-
-Số PPPoE session mà ISP cho phép phụ thuộc vào chính sách của ISP và gói cước.
-
-Nếu PPPoE Discovery liên tục báo:
-
-```text
-Timeout waiting for PADO packets
-```
-
-không nên Change MAC/Restart liên tục.
-
-Hãy để PPPoE chờ hoặc thử lại sau.
-
----
-
-## 21. Cập nhật BoxProxy từ GitHub
-
-Kiểm tra source:
+Validation:
 
 ```bash
 cd ~/boxproxy
-git status
+bash -n bin/boxproxy
+
+for f in lib/*; do
+  [ -f "$f" ] || continue
+  bash -n "$f" || exit 1
+done
+
+python3 -m py_compile web/app.py
+git diff --check
+sudo dhcpd -t -cf /etc/dhcp/dhcpd.conf
 ```
 
-Cập nhật:
+Sau đó:
 
 ```bash
-git pull origin main
+sudo reboot
 ```
 
-Lưu ý: `git pull` chỉ cập nhật source trong:
+## 4. WebUI
+
+Sau reboot:
 
 ```text
-~/boxproxy
+http://10.10.10.1:8080/
 ```
 
-Nó không tự động thay thế toàn bộ file đang được cài trong:
+Kiểm tra:
+
+```bash
+systemctl is-active boxproxy-web.service
+sudo ss -lntp | grep ':8080'
+```
+
+## 5. PPPoE WAN
+
+PPPoE WAN giữ mô hình V1:
+
+- nhiều Proxy Session trên một WAN;
+- macvlan riêng cho từng session;
+- Start / Stop / Restart;
+- Change MAC;
+- Change Password;
+- Proxy ON/OFF;
+- Proxy Count;
+- SOCKS5/HTTP theo public IPv4 của từng PPPoE session.
+
+## 6. DHCP WAN
+
+V2 bổ sung DHCP WAN.
+
+Quy tắc:
 
 ```text
-/usr/local/lib/boxproxy
-/usr/local/sbin
-/opt/boxproxy-web
+1 DHCP WAN = đúng 1 Proxy Session
 ```
 
-Nếu triển khai phiên bản mới trên máy sạch, nên chạy installer theo hướng dẫn của phiên bản đó.
+DHCP WAN không có Proxy Count.
+
+Khi tạo DHCP WAN, BoxProxy sẽ:
+
+1. tạo WAN config;
+2. tạo đúng 1 proxy;
+3. lấy DHCP IPv4;
+4. dựng policy routing;
+5. start DNS;
+6. start Dante;
+7. start Squid;
+8. sync LAN routing.
+
+Sau reboot, `boxproxy-wan-restore.service` tự phục hồi DHCP WAN.
+
+Kiểm tra:
+
+```bash
+sudo boxproxy wan-json
+sudo boxproxy web-json
+```
+
+## 7. Routing DHCP WAN
+
+Ví dụ DHCP WAN:
+
+```text
+IP: 192.168.2.18/24
+Gateway: 192.168.2.1
+```
+
+Kiểm tra table:
+
+```bash
+ip route show table 101
+```
+
+Ví dụ:
+
+```text
+default via 192.168.2.1 dev ens33 metric 10
+unreachable default metric 42760
+192.168.2.0/24 dev ens33 scope link src 192.168.2.18
+```
+
+Kiểm tra rule:
+
+```bash
+ip rule
+```
+
+Ví dụ:
+
+```text
+1001: from 192.168.2.18 lookup 101
+2001: from all fwmark 0x2711 lookup 101
+```
+
+## 8. LAN Routing và fail-close
+
+Kiểm tra:
+
+```bash
+sudo boxproxy client-json
+sudo iptables -S FORWARD
+sudo iptables -t nat -S POSTROUTING
+sudo iptables -t mangle -S PREROUTING
+```
+
+Client chưa map phải bị chặn bởi `BOXPROXY-FAILCLOSE`.
+
+## 9. DDNS No-IP
+
+Mỗi WAN có thể có một DDNS.
+
+DDNS của WAN lấy public IPv4 của **Proxy có ID nhỏ nhất thuộc WAN đó**.
+
+WebUI hỗ trợ:
+
+```text
+Enable DDNS
+Provider: No-IP
+Hostname
+Username
+Password
+Check Interval (seconds)
+```
+
+Interval tối thiểu:
+
+```text
+30 giây
+```
+
+Password DDNS không được render ngược ra WebUI. Để trống ô Password khi Save sẽ giữ password cũ.
+
+Timer:
+
+```text
+boxproxy-ddns.timer
+```
+
+gọi:
+
+```text
+boxproxy-ddns.service
+ -> ddns-sync-all
+ -> ddns-update <WAN_ID>
+```
+
+Kiểm tra:
+
+```bash
+systemctl status boxproxy-ddns.timer --no-pager
+systemctl list-timers --all | grep boxproxy-ddns
+journalctl -u boxproxy-ddns.service -n 50 --no-pager
+```
+
+Kiểm tra DDNS thủ công:
+
+```bash
+sudo /usr/local/lib/boxproxy/ddns-config get 1
+sudo /usr/local/lib/boxproxy/instance-public-ip 1
+sudo /usr/local/lib/boxproxy/ddns-update 1
+```
+
+No-IP thành công có thể trả:
+
+```text
+good <PUBLIC_IP>
+```
+
+hoặc:
+
+```text
+nochg <PUBLIC_IP>
+```
+
+## 10. DHCP WAN sau modem và port-forward
+
+Ví dụ:
+
+```text
+BoxProxy WAN local IP: 192.168.2.18
+Public IPv4:           116.x.x.x
+```
+
+DDNS trỏ tới public IPv4.
+
+Muốn dùng proxy từ Internet, modem/router phía trước cần port-forward, ví dụ:
+
+```text
+TCP 3901 -> 192.168.2.18:3901
+TCP 4901 -> 192.168.2.18:4901
+```
+
+Nên đặt DHCP reservation cho local WAN IP của BoxProxy.
+
+## 11. Kiểm tra service V2
+
+```bash
+systemctl is-active boxproxy-web.service
+systemctl is-active boxproxy-wan-restore.service
+systemctl is-active boxproxy-ddns.timer
+systemctl is-active boxproxy-client-routing.service
+```
+
+Proxy #1 đang bật:
+
+```bash
+systemctl is-active boxproxy-dante@1.service
+systemctl is-active boxproxy-squid@1.service
+systemctl is-active boxproxy-dns@1.service
+```
+
+## 12. Test SOCKS5/HTTP
+
+Từ Windows LAN:
+
+```powershell
+curl.exe --socks5-hostname USER:PASS@10.10.10.1:3901 https://api.ipify.org
+curl.exe -x http://USER:PASS@10.10.10.1:4901 https://api.ipify.org
+```
+
+## 13. Reboot test
+
+```bash
+sudo reboot
+```
+
+Sau reboot, không bấm Start WAN thủ công.
+
+```bash
+ip -br addr
+ip rule
+ip route show table 101
+
+systemctl status boxproxy-wan-restore.service --no-pager -l
+systemctl is-active boxproxy-dante@1.service
+systemctl is-active boxproxy-squid@1.service
+systemctl is-active boxproxy-dns@1.service
+```
 
 ---
 
-## 22. Các vị trí quan trọng
+# Nâng cấp BoxProxy V1 đang chạy sang V2
 
-```text
-Repo:
-~/boxproxy
+## 14. Không chạy lại install.sh
+
+Trên máy V1 production, **không chạy**:
+
+```bash
+sudo bash install.sh
+```
+
+Nâng cấp tại chỗ phải giữ nguyên `/etc/boxproxy` và network config.
+
+## 15. Backup V1
+
+```bash
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP="/root/boxproxy-v1-backup-$STAMP"
+
+sudo mkdir -p "$BACKUP"
+
+sudo cp -a /etc/boxproxy "$BACKUP/"
+sudo cp -a /opt/boxproxy-web "$BACKUP/" 2>/dev/null || true
+sudo cp -a /usr/local/lib/boxproxy "$BACKUP/" 2>/dev/null || true
+sudo cp -a /usr/local/sbin/boxproxy "$BACKUP/" 2>/dev/null || true
+sudo cp -a /etc/systemd/system/boxproxy-* "$BACKUP/" 2>/dev/null || true
+sudo cp -a /etc/ppp/ip-up.d "$BACKUP/ppp-ip-up.d" 2>/dev/null || true
+sudo cp -a /etc/ppp/ip-down.d "$BACKUP/ppp-ip-down.d" 2>/dev/null || true
+sudo cp -a /etc/netplan "$BACKUP/" 2>/dev/null || true
+
+echo "$BACKUP"
+```
+
+## 16. Chuyển source sang V2
+
+```bash
+cd ~/boxproxy
+
+git status
+git fetch origin
+git checkout v2-dev
+git pull origin v2-dev
+```
+
+Kiểm tra:
+
+```bash
+git branch --show-current
+git log --oneline -5
+```
+
+## 17. Deploy V2 nhưng giữ config V1
 
 CLI:
-/usr/local/sbin/boxproxy
 
-Libraries:
-/usr/local/lib/boxproxy/
-
-WebUI:
-/opt/boxproxy-web/
-
-BoxProxy config:
-/etc/boxproxy/
-
-PPPoE instances:
-/etc/boxproxy/instances/
-
-Dante config:
-/etc/boxproxy/dante/
-
-Squid config:
-/etc/boxproxy/squid/
-
-Client routing:
-/etc/boxproxy/client-routes/
-
-Systemd:
-/etc/systemd/system/boxproxy-*.service
+```bash
+sudo install -m 755 bin/boxproxy /usr/local/sbin/boxproxy
 ```
 
----
+Libraries:
 
-## Trạng thái BoxProxy V1 đã kiểm tra
+```bash
+for FILE in lib/*; do
+  [ -f "$FILE" ] || continue
+  sudo install -m 755 "$FILE" "/usr/local/lib/boxproxy/$(basename "$FILE")"
+done
+```
 
-Các chức năng đã được kiểm tra thực tế trong quá trình phát triển:
+PPP hooks:
 
-* PPPoE multi-session.
-* Stop / Start PPPoE độc lập.
-* Reconnect và đổi public IPv4.
-* Change MAC.
-* Change Password ngẫu nhiên.
-* SOCKS5 authentication.
-* SOCKS5 UDP relay.
-* HTTP authenticated proxy.
-* SOCKS5/HTTP trên public PPPoE IPv4.
-* MAC-based LAN client routing.
-* Policy routing từng PPPoE.
-* MSS 1452 cho LAN → PPPoE.
-* Client routing tự phục hồi sau reboot.
-* MSS rule tự phục hồi sau reboot.
-* WebUI.
+```bash
+for FILE in ppp-hooks/ip-up.d/*; do
+  [ -f "$FILE" ] || continue
+  sudo install -m 755 "$FILE" "/etc/ppp/ip-up.d/$(basename "$FILE")"
+done
+
+for FILE in ppp-hooks/ip-down.d/*; do
+  [ -f "$FILE" ] || continue
+  sudo install -m 755 "$FILE" "/etc/ppp/ip-down.d/$(basename "$FILE")"
+done
+```
+
+WebUI:
+
+```bash
+sudo install -d -m 755 /opt/boxproxy-web/templates
+sudo install -m 644 web/app.py /opt/boxproxy-web/app.py
+sudo install -m 644 web/templates/index.html /opt/boxproxy-web/templates/index.html
+sudo install -m 644 web/templates/routing.html /opt/boxproxy-web/templates/routing.html
+```
+
+Systemd:
+
+```bash
+for SERVICE in systemd/*; do
+  [ -f "$SERVICE" ] || continue
+  sudo install -m 644 "$SERVICE" "/etc/systemd/system/$(basename "$SERVICE")"
+done
+```
+
+DDNS directory:
+
+```bash
+sudo install -d -m 700 /etc/boxproxy/ddns
+```
+
+Không xóa hoặc tạo lại:
+
+```text
+/etc/boxproxy/wans/
+/etc/boxproxy/instances/
+/etc/boxproxy/client-routes/
+/etc/boxproxy/settings.conf
+```
+
+V1 config không có `WAN_TYPE` được V2 hiểu mặc định là PPPoE.
+
+## 18. Update sudoers
+
+```bash
+systemctl cat boxproxy-web.service | grep '^User='
+sudo visudo -f /etc/sudoers.d/boxproxy-web
+```
+
+Ví dụ:
+
+```text
+ubuntu ALL=(root) NOPASSWD: /usr/local/sbin/boxproxy
+ubuntu ALL=(root) NOPASSWD: /usr/local/lib/boxproxy/ddns-config
+```
+
+Kiểm tra:
+
+```bash
+sudo visudo -c
+```
+
+## 19. Enable service V2
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable boxproxy-wan-restore.service
+sudo systemctl enable boxproxy-ddns.timer
+sudo systemctl enable boxproxy-client-routing.service
+sudo systemctl enable boxproxy-web.service
+```
+
+## 20. Validation trước reboot
+
+```bash
+cd ~/boxproxy
+
+bash -n bin/boxproxy
+
+for f in lib/*; do
+  [ -f "$f" ] || continue
+  bash -n "$f" || exit 1
+done
+
+python3 -m py_compile web/app.py
+git diff --check
+
+sudo /usr/local/lib/boxproxy/sync-pppoe-secrets
+```
+
+Restart WebUI:
+
+```bash
+sudo systemctl restart boxproxy-web.service
+systemctl is-active boxproxy-web.service
+```
+
+## 21. Reboot sau nâng cấp
+
+```bash
+sudo reboot
+```
+
+Sau reboot:
+
+```bash
+sudo boxproxy wan-json
+sudo boxproxy web-json
+
+ip -br addr
+ip rule
+
+systemctl is-active boxproxy-web.service
+systemctl is-active boxproxy-client-routing.service
+systemctl is-active boxproxy-wan-restore.service
+systemctl is-active boxproxy-ddns.timer
+```
+
+PPPoE cũ:
+
+```bash
+ps aux | grep '[p]ppd'
+sudo ss -lntup | grep -E 'danted|squid'
+```
+
+Test từng proxy trước khi kết luận nâng cấp thành công.
+
+## 22. Vị trí quan trọng
+
+```text
+Repo:                  ~/boxproxy
+CLI:                   /usr/local/sbin/boxproxy
+Libraries:             /usr/local/lib/boxproxy/
+WebUI:                 /opt/boxproxy-web/
+Main config:           /etc/boxproxy/settings.conf
+WAN:                   /etc/boxproxy/wans/
+Proxy instances:       /etc/boxproxy/instances/
+Dante:                 /etc/boxproxy/dante/
+Squid:                 /etc/boxproxy/squid/
+DNS:                   /etc/boxproxy/dns/
+LAN client routing:    /etc/boxproxy/client-routes/
+DDNS:                  /etc/boxproxy/ddns/
+DDNS runtime state:    /run/boxproxy/ddns/
+Systemd:               /etc/systemd/system/boxproxy-*.service
+                       /etc/systemd/system/boxproxy-*.timer
+```
+
+## 23. Trạng thái V2 đã test
+
+Đã test trong quá trình phát triển:
+
+- PPPoE multi-session V1.
+- Start / Stop / Restart PPPoE.
+- Change MAC PPPoE.
+- Change Password proxy.
+- SOCKS5 authentication.
+- SOCKS5 UDP relay.
+- HTTP authenticated proxy.
+- LAN routing theo MAC.
+- MSS 1452 cho LAN -> PPPoE.
+- Fail-close client chưa map.
+- DHCP WAN.
+- DHCP WAN đúng 1 proxy.
+- DHCP SOCKS5/HTTP.
+- DHCP LAN Routing.
+- DHCP Proxy ON/OFF.
+- DHCP Change Password.
+- DHCP tự restore sau reboot.
+- No-IP DDNS.
+- DDNS chỉ update khi public IP thay đổi.
+- DDNS interval theo giây từ WebUI.
+- WebUI hỗ trợ PPPoE/DHCP + DDNS.
