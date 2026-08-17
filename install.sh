@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================
-# BoxProxy V1 Installer
+# BoxProxy V2 Installer
 # Target: Ubuntu Server 22.04 LTS
 # ============================================================
 
@@ -22,10 +22,10 @@ fi
 
 echo
 echo "============================================================"
-echo "                 BoxProxy V1 Installer"
+echo "                 BoxProxy V2 Installer"
 echo "============================================================"
 echo
-echo "BoxProxy V1 uses:"
+echo "BoxProxy V2 uses:"
 echo
 echo "  LAN Gateway       : 10.10.10.1/24"
 echo "  Dynamic DHCP      : 10.10.10.2 - 10.10.10.100"
@@ -104,7 +104,8 @@ apt-get install -y \
     iproute2 \
     iptables \
     openssl \
-    curl
+    curl \
+    networkd-dispatcher
 
 echo
 echo "============================================================"
@@ -218,6 +219,18 @@ for FILE in "$REPO_DIR"/ppp-hooks/ip-down.d/*; do
     install -m 755 "$FILE" \
         "/etc/ppp/ip-down.d/$(basename "$FILE")"
 done
+
+# Install networkd-dispatcher hooks used by DHCP/WiFi WAN.
+if [ -d "$REPO_DIR/networkd-dispatcher/routable.d" ]; then
+    install -d -m 755 /etc/networkd-dispatcher/routable.d
+
+    for FILE in "$REPO_DIR"/networkd-dispatcher/routable.d/*; do
+        [ -f "$FILE" ] || continue
+
+        install -m 755 "$FILE" \
+            "/etc/networkd-dispatcher/routable.d/$(basename "$FILE")"
+    done
+fi
 
 echo
 echo "============================================================"
@@ -374,9 +387,12 @@ systemctl daemon-reload
 
 systemctl enable boxproxy-web.service
 systemctl enable boxproxy-client-routing.service
+systemctl enable boxproxy-wan-restore.service
 systemctl enable isc-dhcp-server.service
 
-# Disable package default services that BoxProxy V1 does not use.
+systemctl enable networkd-dispatcher.service >/dev/null 2>&1 || true
+
+# Disable package default services that BoxProxy V2 does not use.
 # Dante is managed by boxproxy-dante@.service per proxy instance.
 systemctl disable danted.service >/dev/null 2>&1 || true
 systemctl mask danted.service >/dev/null 2>&1 || true
@@ -386,7 +402,8 @@ systemctl mask danted.service >/dev/null 2>&1 || true
 systemctl disable squid.service >/dev/null 2>&1 || true
 systemctl mask squid.service >/dev/null 2>&1 || true
 
-# BoxProxy V1 is IPv4-only. Keep DHCPv4, disable DHCPv6 service.
+# BoxProxy V2 currently uses IPv4 only.
+# Keep DHCPv4, disable DHCPv6 service.
 systemctl disable isc-dhcp-server6.service >/dev/null 2>&1 || true
 systemctl mask isc-dhcp-server6.service >/dev/null 2>&1 || true
 
@@ -419,7 +436,7 @@ dhcpd -t -cf /etc/dhcp/dhcpd.conf
 
 echo
 echo "============================================================"
-echo "               BoxProxy V1 installation complete"
+echo "               BoxProxy V2 installation complete"
 echo "============================================================"
 echo
 echo "WAN interface : $WAN_IF"
