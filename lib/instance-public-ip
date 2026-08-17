@@ -19,10 +19,10 @@ case "$WAN_TYPE" in
         PUBLIC_IP="$EGRESS_IP"
         ;;
 
-    dhcp)
+    dhcp|wifi)
         PUBLIC_IP=$(
             curl \
-                --interface "$EGRESS_IF" \
+                --interface "$EGRESS_IP" \
                 -4 \
                 --silent \
                 --show-error \

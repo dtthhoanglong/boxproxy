@@ -1,0 +1,68 @@
+#!/bin/bash
+
+IFACE="${IFACE:-}"
+
+[ -n "$IFACE" ] || exit 0
+
+for WAN_CONF in /etc/boxproxy/wans/*.conf; do
+    [ -f "$WAN_CONF" ] || continue
+
+    unset WAN_ID WAN_TYPE PARENT_IF
+    . "$WAN_CONF"
+
+    [ "${WAN_TYPE:-pppoe}" = "wifi" ] || continue
+    [ "${PARENT_IF:-}" = "$IFACE" ] || continue
+
+    for INSTANCE_CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$INSTANCE_CONF" ] || continue
+
+        unset WAN_ID PROXY_ENABLED
+        . "$INSTANCE_CONF"
+
+        [ "$WAN_ID" = "$(basename "$WAN_CONF" .conf)" ] || continue
+
+        INSTANCE_ID="$(basename "$INSTANCE_CONF" .conf)"
+
+        # WiFi DHCP is ready: rebuild instance routing first.
+        /usr/local/lib/boxproxy/routing-up "$INSTANCE_ID" \
+            >/dev/null 2>&1 || continue
+
+        # DNS follows the current WiFi egress.
+        systemctl reset-failed \
+            "boxproxy-dns@${INSTANCE_ID}.service" \
+            >/dev/null 2>&1 || true
+
+        systemctl restart \
+            "boxproxy-dns@${INSTANCE_ID}.service" \
+            >/dev/null 2>&1 || true
+
+        if [ "${PROXY_ENABLED:-yes}" = "yes" ]; then
+            systemctl reset-failed \
+                "boxproxy-dante@${INSTANCE_ID}.service" \
+                "boxproxy-squid@${INSTANCE_ID}.service" \
+                >/dev/null 2>&1 || true
+
+            systemctl restart \
+                "boxproxy-dante@${INSTANCE_ID}.service" \
+                >/dev/null 2>&1 || true
+
+            systemctl restart \
+                "boxproxy-squid@${INSTANCE_ID}.service" \
+                >/dev/null 2>&1 || true
+        else
+            systemctl stop \
+                "boxproxy-dante@${INSTANCE_ID}.service" \
+                "boxproxy-squid@${INSTANCE_ID}.service" \
+                >/dev/null 2>&1 || true
+        fi
+    done
+
+    # Rebuild all persistent MAC -> Proxy mappings after
+    # the WiFi routing table is available again.
+    /usr/local/lib/boxproxy/client-route-sync \
+        >/dev/null 2>&1 || true
+
+    exit 0
+done
+
+exit 0

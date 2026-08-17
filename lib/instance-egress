@@ -28,7 +28,7 @@ case "$WAN_TYPE" in
     pppoe)
         EGRESS_IF="${PPP_IF:-}"
         ;;
-    dhcp)
+dhcp|wifi)
         EGRESS_IF="${PARENT_IF:-}"
         ;;
     *)
