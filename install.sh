@@ -119,6 +119,7 @@ install -d -m 700 /etc/boxproxy/dante
 install -d -m 700 /etc/boxproxy/dns
 install -d -m 700 /etc/boxproxy/squid
 install -d -m 700 /etc/boxproxy/client-routes
+install -d -m 700 /etc/boxproxy/ddns
 
 install -d -m 755 /usr/local/lib/boxproxy
 install -d -m 755 /opt/boxproxy-web
@@ -360,14 +361,18 @@ sysctl --system >/dev/null
 
 echo
 echo "============================================================"
+
 echo "13. Installing systemd services"
 echo "============================================================"
 
-for SERVICE in "$REPO_DIR"/systemd/*.service; do
-    [ -f "$SERVICE" ] || continue
+for UNIT in \
+    "$REPO_DIR"/systemd/*.service \
+    "$REPO_DIR"/systemd/*.timer; do
 
-    install -m 644 "$SERVICE" \
-        "/etc/systemd/system/$(basename "$SERVICE")"
+    [ -f "$UNIT" ] || continue
+
+    install -m 644 "$UNIT" \
+        "/etc/systemd/system/$(basename "$UNIT")"
 done
 
 # Make Web UI service use the user who launched sudo if it contains User=ubuntu.
@@ -388,6 +393,7 @@ systemctl daemon-reload
 systemctl enable boxproxy-web.service
 systemctl enable boxproxy-client-routing.service
 systemctl enable boxproxy-wan-restore.service
+systemctl enable boxproxy-ddns.timer
 systemctl enable isc-dhcp-server.service
 
 systemctl enable networkd-dispatcher.service >/dev/null 2>&1 || true

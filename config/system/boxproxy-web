@@ -1,1 +1,2 @@
 ubuntu ALL=(root) NOPASSWD: /usr/local/sbin/boxproxy
+ubuntu ALL=(root) NOPASSWD: /usr/local/lib/boxproxy/ddns-config
