@@ -1,4 +1,4 @@
-#!/bin/bash
+	#!/bin/bash
 set -e
 
 ID="$1"
@@ -21,8 +21,10 @@ if [ -f "$DNS_STATE" ]; then
     . "$DNS_STATE"
 fi
 
-# DHCP WAN: lấy DNS mà systemd-resolved nhận được từ DHCP.
-if [ "$WAN_TYPE" = "dhcp" ] && [ -z "${DNS1:-}" ]; then
+# DHCP Ethernet và WiFi WAN:
+# lấy DNS mà systemd-resolved nhận được từ DHCP.
+if { [ "$WAN_TYPE" = "dhcp" ] || [ "$WAN_TYPE" = "wifi" ]; } \
+   && [ -z "${DNS1:-}" ]; then
     DNS_LINE=$(
         resolvectl dns "$EGRESS_IF" 2>/dev/null \
             | sed -n 's/^[^:]*: //p' \

@@ -189,6 +189,32 @@ def wan_save(wan_id):
 
     return redirect("/")
 
+@app.post("/wan-save-wifi/<int:wan_id>")
+def wan_save_wifi(wan_id):
+    ssid = request.form.get("wifi_ssid", "").strip()
+    password = request.form.get("wifi_password", "")
+    band = request.form.get("wifi_band", "auto").strip()
+
+    if not ssid:
+        return redirect("/")
+
+    if band not in ("auto", "2.4ghz", "5ghz"):
+        band = "auto"
+
+    run_cmd(
+        [
+            "sudo",
+            BOXPROXY,
+            "wan-save-wifi",
+            str(wan_id),
+            ssid,
+            password,
+            band
+        ]
+    )
+
+    return redirect("/")
+
 @app.post("/wan-proxy/<int:wan_id>/<action>")
 def wan_proxy(wan_id, action):
     allowed = {
@@ -490,6 +516,31 @@ def wan_add():
 
         return redirect("/")
 
+    if wan_type == "wifi":
+        ssid = request.form.get("wifi_ssid", "").strip()
+        wifi_password = request.form.get("wifi_password", "")
+        wifi_band = request.form.get("wifi_band", "auto").strip()
+
+        if not ssid or not wifi_password:
+            return redirect("/")
+
+        if wifi_band not in ("auto", "2.4ghz", "5ghz"):
+            wifi_band = "auto"
+
+        run_cmd(
+            [
+                "sudo",
+                BOXPROXY,
+                "wan-add-wifi",
+                interface,
+                ssid,
+                wifi_password,
+                wifi_band
+            ]
+        )
+
+        return redirect("/")
+
     username = request.form.get("pppoe_user", "").strip()
     password = request.form.get("pppoe_password", "").strip()
 
@@ -508,7 +559,6 @@ def wan_add():
     )
 
     return redirect("/")
-
 
 @app.get("/api/wan-status")
 def api_wan_status():

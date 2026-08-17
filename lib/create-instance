@@ -122,10 +122,10 @@ EOF
         chmod 600 "$PEER"
         ;;
 
-    dhcp)
+    dhcp|wifi)
         cat > "$CONF" <<EOF
 WAN_ID="$WAN_ID"
-WAN_TYPE="dhcp"
+WAN_TYPE="$WAN_TYPE"
 
 EGRESS_IF="$PARENT_IF"
 
@@ -144,6 +144,7 @@ EOF
         echo "Unsupported WAN type: $WAN_TYPE"
         exit 1
         ;;
+
 esac
 
 # Tạo Linux user cho Dante nếu chưa có

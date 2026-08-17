@@ -700,10 +700,16 @@ wan-start)
 
     case "$WAN_TYPE" in
 
-            dhcp)
-            /usr/local/lib/boxproxy/dhcp-wan-up "$TARGET_WAN"
+        dhcp|wifi)
 
-            # Wait for DHCP IPv4.
+            if [ "$WAN_TYPE" = "dhcp" ]; then
+                /usr/local/lib/boxproxy/dhcp-wan-up "$TARGET_WAN"
+            else
+                /usr/local/lib/boxproxy/wifi-wan-up "$TARGET_WAN"
+            fi
+
+            # Wait for WAN IPv4.
+
             for i in $(seq 1 30); do
                 if ip -4 -o addr show dev "$PARENT_IF" \
                     | grep -q 'inet '; then
@@ -715,12 +721,14 @@ wan-start)
 
             if ! ip -4 -o addr show dev "$PARENT_IF" \
                 | grep -q 'inet '; then
-                echo "DHCP WAN $TARGET_WAN did not get IPv4"
+
+                echo "$WAN_TYPE WAN $TARGET_WAN did not get IPv4"
                 exit 1
+
             fi
 
             # Rebuild routing and restart services for all instances
-            # belonging to this DHCP WAN.
+            # belonging to this DHCP/WiFi WAN.
             for CONF in /etc/boxproxy/instances/*.conf; do
                 [ -f "$CONF" ] || continue
 
@@ -749,9 +757,10 @@ wan-start)
             ;;
 
         *)
-            echo "wan-start currently supports DHCP WAN only"
+            echo "wan-start currently supports DHCP/WiFi WAN only"
             exit 1
             ;;
+
     esac
     ;;
 
@@ -771,8 +780,9 @@ wan-stop)
 
     case "$WAN_TYPE" in
 
-            dhcp)
+        dhcp|wifi)
             # Stop all proxy/DNS services belonging to this WAN first.
+
             for CONF in /etc/boxproxy/instances/*.conf; do
                 [ -f "$CONF" ] || continue
 
@@ -800,16 +810,21 @@ wan-stop)
                     2>/dev/null || true
             done
 
-            /usr/local/lib/boxproxy/dhcp-wan-down "$TARGET_WAN"
+            if [ "$WAN_TYPE" = "dhcp" ]; then
+                /usr/local/lib/boxproxy/dhcp-wan-down "$TARGET_WAN"
+            else
+                /usr/local/lib/boxproxy/wifi-wan-down "$TARGET_WAN"
+            fi
 
             /usr/local/lib/boxproxy/client-route-sync \
                 2>/dev/null || true
             ;;
 
         *)
-            echo "wan-stop currently supports DHCP WAN only"
+            echo "wan-stop currently supports DHCP/WiFi WAN only"
             exit 1
             ;;
+
     esac
     ;;
 
@@ -1026,6 +1041,134 @@ EOF
 
     echo "DHCP WAN $NEW_WAN_ID is ready"
     ;;
+
+wan-add-wifi)
+    NEW_IF="$ID"
+    WIFI_SSID_NEW="$ARG3"
+    WIFI_PASSWORD_NEW="$ARG4"
+    WIFI_BAND_NEW="${ARG5:-auto}"
+
+    if [ -z "$NEW_IF" ] || \
+       [ -z "$WIFI_SSID_NEW" ] || \
+       [ -z "$WIFI_PASSWORD_NEW" ]; then
+        echo "Usage: boxproxy wan-add-wifi <interface> <ssid> <password> [auto|2.4ghz|5ghz]"
+        exit 1
+    fi
+
+    case "$WIFI_BAND_NEW" in
+        auto|2.4ghz|5ghz)
+            ;;
+        *)
+            echo "Invalid WiFi band: $WIFI_BAND_NEW"
+            exit 1
+            ;;
+    esac
+
+    if [ ! -d "/sys/class/net/$NEW_IF" ]; then
+        echo "Interface not found: $NEW_IF"
+        exit 1
+    fi
+
+    . /etc/boxproxy/settings.conf
+
+    if [ "$NEW_IF" = "$LAN_IF" ]; then
+        echo "Interface $NEW_IF is LAN and cannot be used as WAN"
+        exit 1
+    fi
+
+    # Phải là WiFi interface thật.
+    if [ ! -d "/sys/class/net/$NEW_IF/wireless" ]; then
+        echo "Interface $NEW_IF is not a WiFi interface"
+        exit 1
+    fi
+
+    # Không cho một interface thuộc nhiều WAN.
+    for OTHER_WAN_CONF in /etc/boxproxy/wans/*.conf; do
+        [ -f "$OTHER_WAN_CONF" ] || continue
+
+        USED_IF=$(grep '^PARENT_IF=' "$OTHER_WAN_CONF" \
+            | cut -d= -f2 \
+            | tr -d '"')
+
+        if [ "$USED_IF" = "$NEW_IF" ]; then
+            echo "Interface $NEW_IF is already used by another WAN"
+            exit 1
+        fi
+    done
+
+    ip link set dev "$NEW_IF" up
+
+    NEW_WAN_ID=1
+
+    while [ -f "/etc/boxproxy/wans/${NEW_WAN_ID}.conf" ]; do
+        NEW_WAN_ID=$((NEW_WAN_ID + 1))
+    done
+
+    NEW_MAC=$(cat "/sys/class/net/${NEW_IF}/address" \
+        2>/dev/null || echo "")
+
+    WAN_CONF="/etc/boxproxy/wans/${NEW_WAN_ID}.conf"
+
+    cat > "$WAN_CONF" <<EOF
+WAN_ID="$NEW_WAN_ID"
+WAN_TYPE="wifi"
+PARENT_IF="$NEW_IF"
+PARENT_MAC="$NEW_MAC"
+
+WIFI_SSID="$WIFI_SSID_NEW"
+WIFI_PASSWORD="$WIFI_PASSWORD_NEW"
+WIFI_BAND="$WIFI_BAND_NEW"
+
+WAN_PROXY_ENABLED="yes"
+EOF
+
+    chmod 600 "$WAN_CONF"
+
+    # WiFi WAN giống DHCP WAN:
+    # mỗi WAN sở hữu đúng một proxy instance.
+    NEW_INSTANCE_ID=1
+
+    while [ -f "/etc/boxproxy/instances/${NEW_INSTANCE_ID}.conf" ]; do
+        NEW_INSTANCE_ID=$((NEW_INSTANCE_ID + 1))
+    done
+
+    echo "Creating Proxy $NEW_INSTANCE_ID for WiFi WAN $NEW_WAN_ID..."
+
+    /usr/local/lib/boxproxy/create-instance \
+        "$NEW_INSTANCE_ID" \
+        "$NEW_WAN_ID"
+
+    # WiFi WAN không dùng macvlan/PPPoE.
+    systemctl disable \
+        "boxproxy-macvlan@${NEW_INSTANCE_ID}.service" \
+        >/dev/null 2>&1 || true
+
+    systemctl disable \
+        "boxproxy-pppoe@${NEW_INSTANCE_ID}.service" \
+        >/dev/null 2>&1 || true
+
+    systemctl disable \
+        "boxproxy-dante@${NEW_INSTANCE_ID}.service" \
+        >/dev/null 2>&1 || true
+
+    systemctl disable \
+        "boxproxy-squid@${NEW_INSTANCE_ID}.service" \
+        >/dev/null 2>&1 || true
+
+    echo "WiFi WAN $NEW_WAN_ID created"
+    echo "Interface : $NEW_IF"
+    echo "MAC       : $NEW_MAC"
+    echo "SSID      : $WIFI_SSID_NEW"
+    echo "Band      : $WIFI_BAND_NEW"
+    echo "Proxy     : $NEW_INSTANCE_ID"
+
+    echo "Starting WiFi WAN $NEW_WAN_ID..."
+
+    "$0" wan-start "$NEW_WAN_ID"
+
+    echo "WiFi WAN $NEW_WAN_ID is ready"
+    ;;
+
 wan-add)
     NEW_IF="$ID"
     NEW_USER="$ARG3"
@@ -1105,11 +1248,13 @@ EOF
     for WAN_CONF in /etc/boxproxy/wans/*.conf; do
         [ -f "$WAN_CONF" ] || continue
 
-        unset WAN_ID
-        unset WAN_TYPE
-        unset PARENT_IF
-        unset PPPOE_USER
-        unset WAN_PROXY_ENABLED
+	unset WAN_ID
+unset WAN_TYPE
+unset PARENT_IF
+unset PPPOE_USER
+unset WIFI_SSID
+unset WIFI_BAND
+unset WAN_PROXY_ENABLED
 
         . "$WAN_CONF"
 
@@ -1144,11 +1289,13 @@ done
 
         FIRST=0
 
-printf '  {"wan_id":%s,"wan_type":"%s","interface":"%s","pppoe_user":"%s","proxy_count":%s,"proxy_enabled":"%s"}' \
+printf '  {"wan_id":%s,"wan_type":"%s","interface":"%s","pppoe_user":"%s","wifi_ssid":"%s","wifi_band":"%s","proxy_count":%s,"proxy_enabled":"%s"}' \
     "$WAN_ID" \
     "$WAN_TYPE" \
     "$PARENT_IF" \
     "${PPPOE_USER:-}" \
+    "${WIFI_SSID:-}" \
+    "${WIFI_BAND:-}" \
     "$COUNT" \
     "$ANY_PROXY_ENABLED"
 
@@ -1275,6 +1422,92 @@ EOF
         echo "Restart WAN sessions to apply the new interface"
     fi
     ;;
+
+    wan-save-wifi)
+    WAN_ID="$ID"
+    NEW_SSID="$ARG3"
+    NEW_PASS="$ARG4"
+    NEW_BAND="${ARG5:-auto}"
+
+    if [ -z "$WAN_ID" ] || [ -z "$NEW_SSID" ]; then
+        echo "Usage: boxproxy wan-save-wifi <wan_id> <ssid> [password] [auto|2.4ghz|5ghz]"
+        exit 1
+    fi
+
+    WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
+
+    if [ ! -f "$WAN_CONF" ]; then
+        echo "WAN $WAN_ID does not exist"
+        exit 1
+    fi
+
+    unset WAN_TYPE PARENT_IF PARENT_MAC
+    unset WIFI_SSID WIFI_PASSWORD WIFI_BAND
+    unset WAN_PROXY_ENABLED
+
+    . "$WAN_CONF"
+
+    if [ "${WAN_TYPE:-}" != "wifi" ]; then
+        echo "WAN $WAN_ID is not a WiFi WAN"
+        exit 1
+    fi
+
+    OLD_SSID="${WIFI_SSID:-}"
+    OLD_PASS="${WIFI_PASSWORD:-}"
+    OLD_BAND="${WIFI_BAND:-auto}"
+    OLD_PROXY_STATE="${WAN_PROXY_ENABLED:-yes}"
+
+if [ -z "${PARENT_MAC:-}" ]; then
+    PARENT_MAC=$(cat "/sys/class/net/${PARENT_IF}/address" \
+        2>/dev/null || echo "")
+fi
+
+    # Password để trống = giữ password WiFi hiện tại.
+    if [ -z "$NEW_PASS" ]; then
+        NEW_PASS="$OLD_PASS"
+    fi
+
+    if [ -z "$NEW_PASS" ]; then
+        echo "WiFi password is missing"
+        exit 1
+    fi
+
+    case "$NEW_BAND" in
+        auto|2.4ghz|5ghz)
+            ;;
+        *)
+            echo "Invalid WiFi band: $NEW_BAND"
+            exit 1
+            ;;
+    esac
+
+    cat > "$WAN_CONF" <<EOF
+WAN_ID="$WAN_ID"
+WAN_TYPE="wifi"
+PARENT_IF="$PARENT_IF"
+PARENT_MAC="$PARENT_MAC"
+
+WIFI_SSID="$NEW_SSID"
+WIFI_PASSWORD="$NEW_PASS"
+WIFI_BAND="$NEW_BAND"
+
+WAN_PROXY_ENABLED="$OLD_PROXY_STATE"
+EOF
+
+    chmod 600 "$WAN_CONF"
+
+    echo "WiFi WAN $WAN_ID saved"
+    echo "Interface : $PARENT_IF"
+    echo "SSID      : $NEW_SSID"
+    echo "Band      : $NEW_BAND"
+
+    if [ "$OLD_SSID" != "$NEW_SSID" ] || \
+       [ "$OLD_PASS" != "$NEW_PASS" ] || \
+       [ "$OLD_BAND" != "$NEW_BAND" ]; then
+        echo "WiFi configuration changed"
+        echo "Restart WAN to apply the new configuration"
+    fi
+	;;
 
     client-json)
     . /etc/boxproxy/settings.conf

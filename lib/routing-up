@@ -4,6 +4,11 @@ set -e
 ID="$1"
 CONF="/etc/boxproxy/instances/${ID}.conf"
 
+LOCK_FILE="/run/boxproxy-routing-${ID}.lock"
+
+exec 9>"$LOCK_FILE"
+flock -x 9
+
 [ -f "$CONF" ] || exit 1
 
 eval "$(/usr/local/lib/boxproxy/instance-egress "$ID")"
@@ -34,7 +39,7 @@ case "$WAN_TYPE" in
             table "$TABLE"
         ;;
 
-    dhcp)
+dhcp|wifi)
 
         EGRESS_NET=$(ip -4 route show dev "$EGRESS_IF" \
             proto kernel scope link \

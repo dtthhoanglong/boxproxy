@@ -284,6 +284,9 @@ input {
             <option value="dhcp">
                 DHCP
             </option>
+<option value="wifi">
+    WiFi
+</option>
         </select>
     </div>
 
@@ -306,6 +309,35 @@ input {
             id="addWanPppoePasswordInput"
             required>
     </div>
+
+    <div id="addWanWifiSsid" style="display:none;">
+    <strong>WiFi SSID:</strong>
+
+    <input
+        type="text"
+        name="wifi_ssid"
+        id="addWanWifiSsidInput">
+</div>
+
+<div id="addWanWifiPassword" style="display:none;">
+    <strong>WiFi Password:</strong>
+
+    <input
+        type="password"
+        name="wifi_password"
+        id="addWanWifiPasswordInput">
+</div>
+
+<div id="addWanWifiBand" style="display:none;">
+    <strong>WiFi Band:</strong>
+
+    <select name="wifi_band"
+            id="addWanWifiBandInput">
+        <option value="auto">Auto</option>
+        <option value="2.4ghz">2.4 GHz</option>
+        <option value="5ghz">5 GHz</option>
+    </select>
+</div>
 
     <div class="wan-buttons">
         <button type="submit">
@@ -334,19 +366,23 @@ input {
     <div class="wan-config">
 
         <div>
-            <strong>WAN Type:</strong>
-            <span>
-                {% if w.wan_type == "dhcp" %}
-                    DHCP
-                {% else %}
-                    PPPoE
-                {% endif %}
-            </span>
+
+	<strong>WAN Type:</strong>
+<span>
+    {% if w.wan_type == "dhcp" %}
+        DHCP
+    {% elif w.wan_type == "wifi" %}
+        WiFi
+    {% else %}
+        PPPoE
+    {% endif %}
+</span>
+
         </div>
 
     </div>
 
-{% if w.wan_type != "dhcp" %}
+{% if w.wan_type == "pppoe" %}
 
 <form method="post"
       action="/wan-save/{{ w.wan_id }}"
@@ -398,16 +434,82 @@ input {
 </form>
 
 {% endif %}
+
+{% if w.wan_type == "wifi" %}
+
+<form method="post"
+      action="/wan-save-wifi/{{ w.wan_id }}"
+      class="wan-config"
+      id="wan-save-wifi-{{ w.wan_id }}">
+
+    <div>
+        <strong>Interface:</strong>
+        <span>{{ w.interface }}</span>
+    </div>
+
+    <div>
+        <strong>WiFi SSID:</strong>
+        <input
+            type="text"
+            name="wifi_ssid"
+            value="{{ w.wifi_ssid }}"
+            required>
+    </div>
+
+    <div>
+        <strong>WiFi Password:</strong>
+        <input
+            type="password"
+            name="wifi_password"
+            placeholder="Leave blank to keep current">
+    </div>
+
+    <div>
+        <strong>WiFi Band:</strong>
+
+        <select name="wifi_band">
+
+            <option value="auto"
+                {% if w.wifi_band == "auto" %}selected{% endif %}>
+                Auto
+            </option>
+
+            <option value="2.4ghz"
+                {% if w.wifi_band == "2.4ghz" %}selected{% endif %}>
+                2.4 GHz
+            </option>
+
+            <option value="5ghz"
+                {% if w.wifi_band == "5ghz" %}selected{% endif %}>
+                5 GHz
+            </option>
+
+        </select>
+    </div>
+
+</form>
+
+{% endif %}
+
 <div class="wan-buttons">
-{% if w.wan_type != "dhcp" %}
+{% if w.wan_type == "pppoe" %}
 
     <button type="submit"
             form="wan-save-{{ w.wan_id }}">
         Save WAN
     </button>
 {% endif %}
-{% if w.wan_type == "dhcp" %}
 
+{% if w.wan_type == "wifi" %}
+
+    <button type="submit"
+            form="wan-save-wifi-{{ w.wan_id }}">
+        Save WiFi
+    </button>
+
+{% endif %}
+
+{% if w.wan_type in ["dhcp", "wifi"] %}
 <form method="post"
       action="/wan-power/{{ w.wan_id }}/start">
     <button type="submit">
@@ -439,18 +541,17 @@ input {
 
 </form>
 
-
-    <form method="post"
-          action="/wan-delete/{{ w.wan_id }}"
-          onsubmit="return confirm('Delete WAN {{ w.wan_id }} and all PPPoE sessions on this WAN?');">
-        <button type="submit">
-            Delete WAN
-        </button>
-    </form>
+<form method="post"
+      action="/wan-delete/{{ w.wan_id }}"
+      onsubmit="return confirm('Delete WAN {{ w.wan_id }} and all proxy instance(s) on this WAN?');">
+    <button type="submit">
+        Delete WAN
+    </button>
+</form>
 
 </div>
 
-{% if w.wan_type != "dhcp" %}
+{% if w.wan_type == "pppoe" %}
 <form method="post"
       action="/set-count/{{ w.wan_id }}"
       class="wan-count">
@@ -598,13 +699,16 @@ input {
 <div class="info-item">
     <strong>WAN:</strong>
 
-    <span id="wan-state-{{ p.id }}">
-        {% if p.wan_type == "dhcp" %}
-            DHCP / {{ p.egress_if }}
-        {% else %}
-            PPPoE / {{ p.ppp_if }}
-        {% endif %}
-    </span>
+<span id="wan-state-{{ p.id }}">
+    {% if p.wan_type == "dhcp" %}
+        DHCP / {{ p.egress_if }}
+    {% elif p.wan_type == "wifi" %}
+        WiFi / {{ p.egress_if }}
+    {% else %}
+        PPPoE / {{ p.ppp_if }}
+    {% endif %}
+</span>
+
 </div>
 
         <div class="info-item">
@@ -655,11 +759,12 @@ input {
     </div>
 
 
-    <div class="actions">
+<div class="actions">
 
-        {% if p.wan_type != "dhcp" %}
-        <form method="post"
-              action="/action/{{ p.id }}/start">
+    {% if p.wan_type == "pppoe" %}
+    <form method="post"
+          action="/action/{{ p.id }}/start">
+
             <button type="submit">Start</button>
         </form>
 
@@ -879,28 +984,56 @@ function updateAddWanType() {
     const type =
         document.getElementById('addWanType').value;
 
-    const userRow =
+    const pppoeUserRow =
         document.getElementById('addWanPppoeUser');
 
-    const passwordRow =
+    const pppoePasswordRow =
         document.getElementById('addWanPppoePassword');
 
-    const userInput =
+    const pppoeUserInput =
         document.getElementById('addWanPppoeUserInput');
 
-    const passwordInput =
+    const pppoePasswordInput =
         document.getElementById('addWanPppoePasswordInput');
 
+    const wifiSsidRow =
+        document.getElementById('addWanWifiSsid');
+
+    const wifiPasswordRow =
+        document.getElementById('addWanWifiPassword');
+
+    const wifiBandRow =
+        document.getElementById('addWanWifiBand');
+
+    const wifiSsidInput =
+        document.getElementById('addWanWifiSsidInput');
+
+    const wifiPasswordInput =
+        document.getElementById('addWanWifiPasswordInput');
+
     const isPppoe = type === 'pppoe';
+    const isWifi = type === 'wifi';
 
-    userRow.style.display =
+    pppoeUserRow.style.display =
         isPppoe ? 'flex' : 'none';
 
-    passwordRow.style.display =
+    pppoePasswordRow.style.display =
         isPppoe ? 'flex' : 'none';
 
-    userInput.required = isPppoe;
-    passwordInput.required = isPppoe;
+    wifiSsidRow.style.display =
+        isWifi ? 'flex' : 'none';
+
+    wifiPasswordRow.style.display =
+        isWifi ? 'flex' : 'none';
+
+    wifiBandRow.style.display =
+        isWifi ? 'flex' : 'none';
+
+    pppoeUserInput.required = isPppoe;
+    pppoePasswordInput.required = isPppoe;
+
+    wifiSsidInput.required = isWifi;
+    wifiPasswordInput.required = isWifi;
 }
 
 async function toggleAddWan() {
@@ -1050,10 +1183,13 @@ const proxyButton =
                     'status ' + (p.state === 'online' ? 'online' : 'offline');
             }
 
-	    if (wanState) {
+if (wanState) {
     if (p.wan_type === 'dhcp') {
         wanState.textContent =
             'DHCP / ' + (p.egress_if || '-');
+    } else if (p.wan_type === 'wifi') {
+        wanState.textContent =
+            'WiFi / ' + (p.egress_if || '-');
     } else {
         wanState.innerHTML =
             'PPPoE / ' +

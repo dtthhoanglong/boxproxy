@@ -1,0 +1,144 @@
+#!/bin/bash
+set -e
+
+WAN_ID="$1"
+
+if [ -z "$WAN_ID" ]; then
+    echo "Usage: wifi-wan-up <wan_id>"
+    exit 1
+fi
+
+WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
+
+if [ ! -f "$WAN_CONF" ]; then
+    echo "WAN config not found: $WAN_CONF"
+    exit 1
+fi
+
+unset WAN_TYPE PARENT_IF WIFI_SSID WIFI_PASSWORD WIFI_BAND
+. "$WAN_CONF"
+
+if [ "${WAN_TYPE:-}" != "wifi" ]; then
+    echo "WAN $WAN_ID is not a WiFi WAN"
+    exit 1
+fi
+
+if [ -z "${PARENT_IF:-}" ]; then
+    echo "WiFi interface is missing"
+    exit 1
+fi
+
+if [ -z "${WIFI_SSID:-}" ]; then
+    echo "WiFi SSID is missing"
+    exit 1
+fi
+
+if [ -z "${WIFI_PASSWORD:-}" ]; then
+    echo "WiFi password is missing"
+    exit 1
+fi
+
+if [ ! -d "/sys/class/net/$PARENT_IF" ]; then
+    echo "WiFi interface not found: $PARENT_IF"
+    exit 1
+fi
+
+WPA_DIR="/etc/boxproxy/wifi"
+WPA_CONF="${WPA_DIR}/wan-${WAN_ID}.conf"
+NETWORK_FILE="/etc/systemd/network/06-boxproxy-wifi-${WAN_ID}.network"
+
+mkdir -p "$WPA_DIR"
+chmod 700 "$WPA_DIR"
+
+# Generate WPA configuration safely.
+{
+    echo 'ctrl_interface=/run/wpa_supplicant'
+    echo 'update_config=0'
+    echo 'country=VN'
+    echo
+    wpa_passphrase "$WIFI_SSID" "$WIFI_PASSWORD"
+} > "$WPA_CONF"
+
+# Optional band restriction.
+case "${WIFI_BAND:-auto}" in
+    2.4ghz)
+        sed -i '/^[[:space:]]*network={/a\    freq_list=2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472' \
+            "$WPA_CONF"
+        ;;
+    5ghz)
+        sed -i '/^[[:space:]]*network={/a\    freq_list=5180 5200 5220 5240 5260 5280 5300 5320 5500 5520 5540 5560 5580 5600 5620 5640 5660 5680 5700 5745 5765 5785 5805 5825' \
+            "$WPA_CONF"
+        ;;
+    auto|"")
+        ;;
+    *)
+        echo "Invalid WiFi band: $WIFI_BAND"
+        exit 1
+        ;;
+esac
+
+chmod 600 "$WPA_CONF"
+
+cat > "$NETWORK_FILE" <<EOF
+[Match]
+Name=$PARENT_IF
+
+[Network]
+DHCP=ipv4
+IPv6AcceptRA=no
+LinkLocalAddressing=ipv6
+
+[DHCPv4]
+RouteMetric=500
+UseDNS=yes
+EOF
+
+chmod 644 "$NETWORK_FILE"
+
+# Không dùng systemd per-interface supplicant cho BoxProxy.
+systemctl stop "wpa_supplicant@${PARENT_IF}.service" \
+    >/dev/null 2>&1 || true
+
+ip link set dev "$PARENT_IF" up
+
+systemctl daemon-reload
+networkctl reload
+
+mkdir -p /run/wpa_supplicant
+
+# wifi-wan-up phải idempotent:
+# nếu wpa_supplicant của interface này đang chạy thì chỉ
+# reload cấu hình, không tạo process thứ hai.
+
+if wpa_cli -i "$PARENT_IF" ping 2>/dev/null \
+    | grep -q '^PONG$'; then
+
+    echo "wpa_supplicant already active on $PARENT_IF"
+
+    CURRENT_SSID=$(
+        iw dev "$PARENT_IF" link 2>/dev/null \
+            | sed -n 's/^[[:space:]]*SSID: //p' \
+            | head -n1
+    )
+
+    if [ "$CURRENT_SSID" = "$WIFI_SSID" ]; then
+        echo "WiFi already connected to SSID: $WIFI_SSID"
+    else
+        echo "WiFi configuration changed, reconfiguring $PARENT_IF"
+
+        wpa_cli -i "$PARENT_IF" reconfigure \
+            >/dev/null 2>&1 || true
+    fi
+else
+    wpa_supplicant \
+        -B \
+        -i "$PARENT_IF" \
+        -c "$WPA_CONF"
+fi
+
+networkctl reconfigure "$PARENT_IF" || true
+
+echo "WiFi WAN $WAN_ID started"
+echo "Interface : $PARENT_IF"
+echo "SSID      : $WIFI_SSID"
+echo "Band      : ${WIFI_BAND:-auto}"

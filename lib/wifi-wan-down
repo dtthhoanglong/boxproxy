@@ -1,0 +1,50 @@
+#!/bin/bash
+set -e
+
+WAN_ID="$1"
+
+if [ -z "$WAN_ID" ]; then
+    echo "Usage: wifi-wan-down <wan_id>"
+    exit 1
+fi
+
+WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
+
+if [ ! -f "$WAN_CONF" ]; then
+    echo "WAN config not found: $WAN_CONF"
+    exit 1
+fi
+
+unset WAN_TYPE PARENT_IF
+. "$WAN_CONF"
+
+if [ "${WAN_TYPE:-}" != "wifi" ]; then
+    echo "WAN $WAN_ID is not a WiFi WAN"
+    exit 1
+fi
+
+WPA_CONF="/etc/boxproxy/wifi/wan-${WAN_ID}.conf"
+NETWORK_FILE="/etc/systemd/network/06-boxproxy-wifi-${WAN_ID}.network"
+
+# Stop wpa_supplicant process bound to this interface.
+pkill -f "wpa_supplicant.*-i[[:space:]]*${PARENT_IF}" \
+    2>/dev/null || true
+
+pkill -f "wpa_supplicant.*-i${PARENT_IF}" \
+    2>/dev/null || true
+
+# Remove DHCP/networkd configuration for this WiFi WAN.
+rm -f "$NETWORK_FILE"
+
+networkctl reload >/dev/null 2>&1 || true
+
+# Remove IPv4 learned by DHCP from this WiFi interface.
+ip -4 addr flush dev "$PARENT_IF" \
+    2>/dev/null || true
+
+# Keep the physical interface available but disconnected.
+iw dev "$PARENT_IF" disconnect \
+    2>/dev/null || true
+
+echo "WiFi WAN $WAN_ID stopped"
+echo "Interface : $PARENT_IF"

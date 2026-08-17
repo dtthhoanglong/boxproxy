@@ -9,11 +9,23 @@ for WAN_CONF in /etc/boxproxy/wans/*.conf; do
 
     WAN_TYPE="${WAN_TYPE:-pppoe}"
 
-    [ "$WAN_TYPE" = "dhcp" ] || continue
+    case "$WAN_TYPE" in
+        dhcp|wifi)
+            echo "Restoring $WAN_TYPE WAN $WAN_ID..."
 
-    echo "Restoring DHCP WAN $WAN_ID..."
+            /usr/local/sbin/boxproxy \
+                wan-start "$WAN_ID"
+            ;;
 
-    /usr/local/sbin/boxproxy wan-start "$WAN_ID"
+        pppoe)
+            # PPPoE vẫn được systemd template/service
+            # khôi phục theo cơ chế hiện tại.
+            ;;
+
+        *)
+            echo "Skipping unsupported WAN type: $WAN_TYPE"
+            ;;
+    esac
 done
 
 echo "BoxProxy WAN restore completed"

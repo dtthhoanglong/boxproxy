@@ -3,6 +3,11 @@ set -e
 
 CONF_DIR="/etc/boxproxy/client-routes"
 
+LOCK_FILE="/run/boxproxy-client-route-sync.lock"
+
+exec 9>"$LOCK_FILE"
+flock -x 9
+
 mkdir -p "$CONF_DIR"
 
 # Xóa các rule do client routing manager tạo trước đó
