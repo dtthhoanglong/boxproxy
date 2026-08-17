@@ -9,9 +9,17 @@ for CONF in /etc/boxproxy/instances/*.conf; do
 
     if [ "$PPP_IF" = "$IFACE" ]; then
         ID=$(basename "$CONF" .conf)
+
+        # PPPoE đã online: dựng routing table/source rule trước.
         /usr/local/lib/boxproxy/routing-up "$ID"
+
+        # Egress của proxy đã sẵn sàng, rebuild toàn bộ
+        # LAN MAC routing để các mapping cũ tự đi theo
+        # PPPoE mới mà không cần người dùng Apply lại.
+        /usr/local/lib/boxproxy/client-route-sync \
+            >/dev/null 2>&1 || true
+
         exit 0
     fi
 done
-
 exit 0
