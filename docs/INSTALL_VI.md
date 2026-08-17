@@ -4,7 +4,7 @@
 
 ## 1. Install V1 có dùng được cho V2 không?
 
-Có thể dùng phần lớn `install.sh` V1 làm nền trên **máy mới**, vì installer hiện copy toàn bộ `lib/*`, WebUI và systemd units. Tuy nhiên V2 có thêm WAN restore, DDNS, helper public-IP/egress và quyền sudo cho `ddns-config`, nên cần các bước bổ sung bên dưới.
+Nhánh `v2-dev` hiện có `install.sh` dành cho **BoxProxy V2**. Trên **máy mới**, dùng trực tiếp installer này. Installer hiện đã cài các thành phần cần thiết cho PPPoE, DHCP Ethernet WAN và WiFi WAN, bao gồm `networkd-dispatcher` và hook phục hồi WiFi WAN.
 
 Với **máy V1 đang chạy**, không chạy lại `install.sh` vì installer có thể ghi lại `settings.conf`, DHCP và network config. Hãy dùng phần nâng cấp tại chỗ ở cuối tài liệu.
 
@@ -42,12 +42,12 @@ sudo bash install.sh
 
 Chưa reboot ngay.
 
-## 3. Bổ sung bắt buộc cho V2
+## 3. Kiểm tra sau khi chạy installer V2
 
-Tạo thư mục DDNS:
+Kiểm tra thư mục DDNS:
 
 ```bash
-sudo install -d -m 700 /etc/boxproxy/ddns
+sudo test -d /etc/boxproxy/ddns && echo "DDNS directory: OK"
 ```
 
 Kiểm tra helper:
@@ -83,15 +83,16 @@ Kiểm tra:
 sudo visudo -c
 ```
 
-Enable service V2:
+Kiểm tra các service V2 đã được enable:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable boxproxy-web.service
-sudo systemctl enable boxproxy-client-routing.service
-sudo systemctl enable boxproxy-wan-restore.service
-sudo systemctl enable boxproxy-ddns.timer
-sudo systemctl enable isc-dhcp-server.service
+systemctl is-enabled boxproxy-web.service
+systemctl is-enabled boxproxy-client-routing.service
+systemctl is-enabled boxproxy-wan-restore.service
+systemctl is-enabled boxproxy-ddns.timer
+systemctl is-enabled isc-dhcp-server.service
+systemctl is-enabled networkd-dispatcher.service
 ```
 
 Không cần enable `boxproxy-ddns.service` trực tiếp; timer sẽ gọi service này.
@@ -178,9 +179,49 @@ sudo boxproxy wan-json
 sudo boxproxy web-json
 ```
 
-## 7. Routing DHCP WAN
+## 7. WiFi WAN
 
-Ví dụ DHCP WAN:
+V2 hỗ trợ dùng card WiFi Linux ở chế độ client/managed làm WAN. Mỗi WiFi WAN có đúng **1 Proxy Session**, tương tự DHCP WAN.
+
+WebUI cần cho phép cấu hình WiFi WAN với interface, SSID và thông tin kết nối WiFi. Sau khi kết nối thành công, BoxProxy dùng IPv4/gateway/DNS mà WiFi nhận được để dựng policy routing, DNS, Dante và Squid.
+
+Các helper hiện dùng cho WiFi WAN:
+
+```text
+wifi-wan-up
+wifi-wan-down
+instance-egress
+instance-public-ip
+wan-restore
+```
+
+Hook `networkd-dispatcher/routable.d/60-boxproxy-wifi` giúp đồng bộ lại routing khi interface WiFi trở thành routable. `install.sh` V2 cài `networkd-dispatcher` và hook này tự động.
+
+Kiểm tra WiFi WAN:
+
+```bash
+sudo boxproxy wan-json
+ip -4 -br addr show wlp1s0
+ip route show table 102
+ip rule
+systemctl status boxproxy-wan-restore.service --no-pager -l
+```
+
+Trạng thái đã test trên J1900:
+
+```text
+WAN 1: DHCP Ethernet -> enp2s0
+WAN 2: WiFi          -> wlp1s0
+LAN:                    enp3s0 / 10.10.10.1
+```
+
+Cả DHCP Ethernet WAN và WiFi WAN đã được kiểm tra với SOCKS5/HTTP và LAN Routing theo MAC.
+
+> Cellular/WWAN không thuộc phạm vi V2 hiện tại. Nếu cần WWAN, dự kiến dùng giải pháp riêng (ví dụ OpenWrt) thay vì tích hợp vào BoxProxy V2 này.
+
+## 8. Routing DHCP/WiFi WAN
+
+Ví dụ DHCP Ethernet WAN:
 
 ```text
 IP: 192.168.2.18/24
@@ -214,7 +255,7 @@ Ví dụ:
 2001: from all fwmark 0x2711 lookup 101
 ```
 
-## 8. LAN Routing và fail-close
+## 9. LAN Routing và fail-close
 
 Kiểm tra:
 
@@ -227,7 +268,7 @@ sudo iptables -t mangle -S PREROUTING
 
 Client chưa map phải bị chặn bởi `BOXPROXY-FAILCLOSE`.
 
-## 9. DDNS No-IP
+## 10. DDNS No-IP
 
 Mỗi WAN có thể có một DDNS.
 
@@ -294,7 +335,7 @@ hoặc:
 nochg <PUBLIC_IP>
 ```
 
-## 10. DHCP WAN sau modem và port-forward
+## 11. DHCP WAN sau modem và port-forward
 
 Ví dụ:
 
@@ -314,7 +355,7 @@ TCP 4901 -> 192.168.2.18:4901
 
 Nên đặt DHCP reservation cho local WAN IP của BoxProxy.
 
-## 11. Kiểm tra service V2
+## 12. Kiểm tra service V2
 
 ```bash
 systemctl is-active boxproxy-web.service
@@ -331,7 +372,7 @@ systemctl is-active boxproxy-squid@1.service
 systemctl is-active boxproxy-dns@1.service
 ```
 
-## 12. Test SOCKS5/HTTP
+## 13. Test SOCKS5/HTTP
 
 Từ Windows LAN:
 
@@ -340,7 +381,7 @@ curl.exe --socks5-hostname USER:PASS@10.10.10.1:3901 https://api.ipify.org
 curl.exe -x http://USER:PASS@10.10.10.1:4901 https://api.ipify.org
 ```
 
-## 13. Reboot test
+## 14. Reboot test
 
 ```bash
 sudo reboot
@@ -363,7 +404,7 @@ systemctl is-active boxproxy-dns@1.service
 
 # Nâng cấp BoxProxy V1 đang chạy sang V2
 
-## 14. Không chạy lại install.sh
+## 15. Không chạy lại install.sh
 
 Trên máy V1 production, **không chạy**:
 
@@ -373,7 +414,7 @@ sudo bash install.sh
 
 Nâng cấp tại chỗ phải giữ nguyên `/etc/boxproxy` và network config.
 
-## 15. Backup V1
+## 16. Backup V1
 
 ```bash
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -393,7 +434,7 @@ sudo cp -a /etc/netplan "$BACKUP/" 2>/dev/null || true
 echo "$BACKUP"
 ```
 
-## 16. Chuyển source sang V2
+## 17. Chuyển source sang V2
 
 ```bash
 cd ~/boxproxy
@@ -411,7 +452,7 @@ git branch --show-current
 git log --oneline -5
 ```
 
-## 17. Deploy V2 nhưng giữ config V1
+## 18. Deploy V2 nhưng giữ config V1
 
 CLI:
 
@@ -463,7 +504,7 @@ done
 DDNS directory:
 
 ```bash
-sudo install -d -m 700 /etc/boxproxy/ddns
+sudo test -d /etc/boxproxy/ddns && echo "DDNS directory: OK"
 ```
 
 Không xóa hoặc tạo lại:
@@ -477,7 +518,7 @@ Không xóa hoặc tạo lại:
 
 V1 config không có `WAN_TYPE` được V2 hiểu mặc định là PPPoE.
 
-## 18. Update sudoers
+## 19. Update sudoers
 
 ```bash
 systemctl cat boxproxy-web.service | grep '^User='
@@ -497,7 +538,7 @@ Kiểm tra:
 sudo visudo -c
 ```
 
-## 19. Enable service V2
+## 20. Enable service V2
 
 ```bash
 sudo systemctl daemon-reload
@@ -507,7 +548,7 @@ sudo systemctl enable boxproxy-client-routing.service
 sudo systemctl enable boxproxy-web.service
 ```
 
-## 20. Validation trước reboot
+## 21. Validation trước reboot
 
 ```bash
 cd ~/boxproxy
@@ -532,7 +573,7 @@ sudo systemctl restart boxproxy-web.service
 systemctl is-active boxproxy-web.service
 ```
 
-## 21. Reboot sau nâng cấp
+## 22. Reboot sau nâng cấp
 
 ```bash
 sudo reboot
@@ -562,7 +603,7 @@ sudo ss -lntup | grep -E 'danted|squid'
 
 Test từng proxy trước khi kết luận nâng cấp thành công.
 
-## 22. Vị trí quan trọng
+## 23. Vị trí quan trọng
 
 ```text
 Repo:                  ~/boxproxy
@@ -582,7 +623,7 @@ Systemd:               /etc/systemd/system/boxproxy-*.service
                        /etc/systemd/system/boxproxy-*.timer
 ```
 
-## 23. Trạng thái V2 đã test
+## 24. Trạng thái V2 đã test
 
 Đã test trong quá trình phát triển:
 
@@ -606,4 +647,10 @@ Systemd:               /etc/systemd/system/boxproxy-*.service
 - No-IP DDNS.
 - DDNS chỉ update khi public IP thay đổi.
 - DDNS interval theo giây từ WebUI.
-- WebUI hỗ trợ PPPoE/DHCP + DDNS.
+- WiFi WAN.
+- WiFi SOCKS5/HTTP.
+- WiFi LAN Routing theo MAC.
+- WiFi tự restore/routing sync sau khi interface routable.
+- Installer V2 cài `networkd-dispatcher` và WiFi hook.
+- WebUI hỗ trợ PPPoE/DHCP/WiFi + DDNS.
+- Cellular/WWAN không nằm trong BoxProxy V2 hiện tại.
