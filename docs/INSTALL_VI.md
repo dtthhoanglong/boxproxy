@@ -1,31 +1,99 @@
-# BoxProxy V2 – Hướng dẫn cài đặt và nâng cấp từ V1
+# BoxProxy V3 -- Hướng dẫn cài đặt và kiểm tra
 
-> Áp dụng cho nhánh `v2-dev`.
+> Áp dụng cho nhánh `v2-dev` tại thời điểm BoxProxy V3 đang được phát
+> triển/test.
+>
+> V3 kế thừa toàn bộ chức năng V2 và bổ sung IPv6 cho PPPoE, DHCPv6
+> Prefix Delegation (PD), IPv6 proxy/session và LAN routing IPv6 theo
+> MAC.
 
-## 1. Install V1 có dùng được cho V2 không?
+## 1. Phạm vi BoxProxy V3 hiện tại
 
-Nhánh `v2-dev` hiện có `install.sh` dành cho **BoxProxy V2**. Trên **máy mới**, dùng trực tiếp installer này. Installer hiện đã cài các thành phần cần thiết cho PPPoE, DHCP Ethernet WAN và WiFi WAN, bao gồm `networkd-dispatcher` và hook phục hồi WiFi WAN.
+V3 hiện giữ các chức năng đã có của V2:
 
-Với **máy V1 đang chạy**, không chạy lại `install.sh` vì installer có thể ghi lại `settings.conf`, DHCP và network config. Hãy dùng phần nâng cấp tại chỗ ở cuối tài liệu.
+-   PPPoE multi-session.
+-   DHCP Ethernet WAN.
+-   WiFi WAN.
+-   SOCKS5 và HTTP proxy.
+-   SOCKS5 UDP relay.
+-   DDNS No-IP.
+-   LAN Routing theo MAC.
+-   Fail-close.
+-   Change MAC / Change Password.
+-   Proxy ON/OFF.
+-   Tự restore WAN/routing sau reboot.
 
-## 2. Cài mới BoxProxy V2
+Phần mới của V3 đã triển khai/test:
 
-```bash
+-   PPPoE có `IP_MODE`: `ipv4`, `dual`, `ipv6`.
+-   PPPoE nhận IPv6 global.
+-   DHCPv6 Prefix Delegation riêng theo PPPoE session.
+-   Mỗi PPPoE session có service `boxproxy-ipv6-pd@ID.service`.
+-   IPv6 proxy/session.
+-   LAN có ULA `fd00:10:10:10::/64`.
+-   SLAAC/Router Advertisement bằng `radvd`.
+-   IPv6 LAN routing theo MAC.
+-   IPv6 NETMAP từ ULA LAN sang delegated /64 của PPPoE session.
+-   Stop/Start và Change MAC có lifecycle IPv6-PD đi cùng PPPoE.
+
+Ví dụ đã test:
+
+``` text
+PPPoE #1 PD: 2402:800:6318:4183::/64
+PPPoE #2 PD: 2402:800:6318:3829::/64
+
+LAN ULA:
+fd00:10:10:10::/64
+```
+
+Ví dụ NETMAP:
+
+``` text
+fd00:10:10:10::/64 -> PPPoE #1 delegated /64
+fd00:10:10:10::/64 -> PPPoE #2 delegated /64
+```
+
+## 2. Cài mới trên máy test
+
+Khuyến nghị thử V3 trên máy mới hoặc máy ảo trước.
+
+Clone repo:
+
+``` bash
 cd ~
 git clone -b v2-dev --single-branch https://github.com/dtthhoanglong/boxproxy.git
 cd ~/boxproxy
+
 git branch --show-current
+git log -3 --oneline
 ```
 
-Kết quả phải là:
+Branch phải là:
 
-```text
+``` text
 v2-dev
 ```
 
-Tắt cloud-init:
+Commit V3 đã push trong quá trình phát triển:
 
-```bash
+``` text
+7aa22f3 Add V3 IPv6 PD and MAC routing support
+```
+
+Nếu repo đã clone từ trước:
+
+``` bash
+cd ~/boxproxy
+git fetch origin
+git checkout v2-dev
+git pull --ff-only origin v2-dev
+```
+
+## 3. Tắt cloud-init
+
+Trên Ubuntu Server mới:
+
+``` bash
 sudo touch /etc/cloud/cloud-init.disabled
 sudo systemctl disable cloud-init-local.service
 sudo systemctl disable cloud-init.service
@@ -33,624 +101,578 @@ sudo systemctl disable cloud-config.service
 sudo systemctl disable cloud-final.service
 ```
 
-Chạy installer nền:
+## 4. Chạy installer V3
 
-```bash
+``` bash
 cd ~/boxproxy
 sudo bash install.sh
 ```
 
-Chưa reboot ngay.
+Installer V3 hiện cài thêm các thành phần IPv6 cần thiết, gồm:
 
-## 3. Kiểm tra sau khi chạy installer V2
-
-Kiểm tra thư mục DDNS:
-
-```bash
-sudo test -d /etc/boxproxy/ddns && echo "DDNS directory: OK"
+``` text
+dhcpcd5
+radvd
 ```
 
-Kiểm tra helper:
+Installer cũng cài:
 
-```bash
-for f in   instance-egress   instance-public-ip   ddns-config   ddns-update   ddns-sync-all   wan-restore; do
-  sudo test -x "/usr/local/lib/boxproxy/$f" && echo "OK: $f" || echo "MISSING: $f"
-done
+``` text
+/etc/ppp/ipv6-up.d/
+/lib/dhcpcd/dhcpcd-hooks/
+/etc/radvd.conf
+/etc/sysctl.d/99-boxproxy-ipv6.conf
+/etc/sysctl.d/99-boxproxy-ipv6-no-temp.conf
+/etc/sysctl.d/90-boxproxy-ipv6-router.conf
 ```
 
-Xem user WebUI:
+Không dùng lại cấu hình V2:
 
-```bash
-systemctl cat boxproxy-web.service | grep '^User='
+``` text
+99-boxproxy-disable-ipv6.conf
 ```
 
-Mở sudoers:
+vì V3 cần IPv6 hoạt động.
 
-```bash
-sudo visudo -f /etc/sudoers.d/boxproxy-web
+## 5. LAN của V3
+
+IPv4 LAN mặc định:
+
+``` text
+10.10.10.1/24
 ```
 
-Ví dụ WebUI chạy bằng `ubuntu`, file cần có:
+IPv6 ULA LAN:
 
-```text
-ubuntu ALL=(root) NOPASSWD: /usr/local/sbin/boxproxy
-ubuntu ALL=(root) NOPASSWD: /usr/local/lib/boxproxy/ddns-config
+``` text
+fd00:10:10:10::1/64
 ```
 
 Kiểm tra:
 
-```bash
-sudo visudo -c
+``` bash
+ip -4 addr
+ip -6 addr
 ```
 
-Kiểm tra các service V2 đã được enable:
+Kiểm tra forwarding:
 
-```bash
-sudo systemctl daemon-reload
-systemctl is-enabled boxproxy-web.service
-systemctl is-enabled boxproxy-client-routing.service
-systemctl is-enabled boxproxy-wan-restore.service
-systemctl is-enabled boxproxy-ddns.timer
-systemctl is-enabled isc-dhcp-server.service
-systemctl is-enabled networkd-dispatcher.service
+``` bash
+sysctl net.ipv4.ip_forward
+sysctl net.ipv6.conf.all.forwarding
 ```
 
-Không cần enable `boxproxy-ddns.service` trực tiếp; timer sẽ gọi service này.
+## 6. Router Advertisement
 
-Validation:
+V3 sử dụng `radvd` để client LAN tự nhận IPv6 bằng SLAAC.
 
-```bash
-cd ~/boxproxy
-bash -n bin/boxproxy
+Kiểm tra:
 
-for f in lib/*; do
-  [ -f "$f" ] || continue
-  bash -n "$f" || exit 1
-done
+``` bash
+sudo radvd --configtest -C /etc/radvd.conf
+systemctl is-enabled radvd.service
+systemctl is-active radvd.service
+```
 
-python3 -m py_compile web/app.py
-git diff --check
-sudo dhcpd -t -cf /etc/dhcp/dhcpd.conf
+Xem config:
+
+``` bash
+cat /etc/radvd.conf
+```
+
+Client LAN phải nhận địa chỉ thuộc:
+
+``` text
+fd00:10:10:10::/64
+```
+
+## 7. PPPoE IPv6
+
+Mỗi PPPoE instance có thể có `IP_MODE`:
+
+``` text
+ipv4
+dual
+ipv6
+```
+
+Kiểm tra instance:
+
+``` bash
+sudo cat /etc/boxproxy/instances/1.conf
+```
+
+Ví dụ:
+
+``` text
+WAN_TYPE="pppoe"
+IP_MODE="dual"
+PPP_IF="ppp01"
+```
+
+Kiểm tra PPP:
+
+``` bash
+systemctl is-active boxproxy-pppoe@1.service
+ip -4 addr show dev ppp01
+ip -6 addr show dev ppp01
+```
+
+Một PPPoE dual-stack hoạt động có thể có IPv6 global dạng:
+
+``` text
+2402:800:631a:xxxx:....../64
+```
+
+và IPv6 link-local:
+
+``` text
+fe80::....
+```
+
+## 8. DHCPv6 Prefix Delegation
+
+Mỗi PPPoE session dùng service riêng:
+
+``` text
+boxproxy-ipv6-pd@1.service
+boxproxy-ipv6-pd@2.service
+...
+```
+
+Kiểm tra:
+
+``` bash
+systemctl is-active boxproxy-ipv6-pd@1.service
+systemctl is-active boxproxy-ipv6-pd@2.service
+```
+
+Xem delegated prefix:
+
+``` bash
+sudo /usr/local/lib/boxproxy/ipv6-pd-prefix 1
+sudo /usr/local/lib/boxproxy/ipv6-pd-prefix 2
+```
+
+Ví dụ:
+
+``` text
+2402:800:6318:4183::/64
+2402:800:6318:3829::/64
+```
+
+Xem log:
+
+``` bash
+sudo journalctl -u boxproxy-ipv6-pd@1.service -n 50 --no-pager
+```
+
+Khi thành công sẽ thấy nội dung tương tự:
+
+``` text
+REPLY6 received
+delegated prefix 2402:800:....::/64
+```
+
+## 9. Lifecycle PPPoE và IPv6-PD
+
+V3 đã gắn lifecycle PD vào PPPoE.
+
+Stop:
+
+``` bash
+sudo boxproxy stop 1
 ```
 
 Sau đó:
 
-```bash
-sudo reboot
+``` bash
+systemctl is-active boxproxy-pppoe@1.service
+systemctl is-active boxproxy-ipv6-pd@1.service
 ```
 
-## 4. WebUI
+cả hai phải dừng.
 
-Sau reboot:
+Start:
 
-```text
-http://10.10.10.1:8080/
+``` bash
+sudo boxproxy start 1
 ```
+
+Chờ PPPoE kết nối rồi kiểm tra:
+
+``` bash
+systemctl is-active boxproxy-pppoe@1.service
+systemctl is-active boxproxy-ipv6-pd@1.service
+sudo /usr/local/lib/boxproxy/ipv6-pd-prefix 1
+```
+
+Lưu ý ISP có thể mất một khoảng thời gian mới trả lời PPPoE Discovery
+sau khi reconnect.
+
+## 10. Change MAC
+
+``` bash
+sudo boxproxy change-mac 1
+```
+
+V3 sẽ:
+
+1.  stop proxy/session;
+2.  thay MAC macvlan;
+3.  start lại PPPoE;
+4.  start lại IPv6-PD;
+5.  nhận lại IPv6/PD mới khi ISP cấp.
 
 Kiểm tra:
 
-```bash
-systemctl is-active boxproxy-web.service
-sudo ss -lntp | grep ':8080'
+``` bash
+sudo grep '^MAC=' /etc/boxproxy/instances/1.conf
+
+systemctl is-active boxproxy-pppoe@1.service
+systemctl is-active boxproxy-ipv6-pd@1.service
+
+ip -6 addr show dev ppp01
+sudo /usr/local/lib/boxproxy/ipv6-pd-prefix 1
 ```
 
-## 5. PPPoE WAN
+## 11. IPv6 LAN Routing theo MAC
 
-PPPoE WAN giữ mô hình V1:
+Mục tiêu của V3 là giữ cách sử dụng giống IPv4:
 
-- nhiều Proxy Session trên một WAN;
-- macvlan riêng cho từng session;
-- Start / Stop / Restart;
-- Change MAC;
-- Change Password;
-- Proxy ON/OFF;
-- Proxy Count;
-- SOCKS5/HTTP theo public IPv4 của từng PPPoE session.
-
-## 6. DHCP WAN
-
-V2 bổ sung DHCP WAN.
-
-Quy tắc:
-
-```text
-1 DHCP WAN = đúng 1 Proxy Session
+``` text
+Client MAC -> Proxy/PPPoE Session
 ```
 
-DHCP WAN không có Proxy Count.
+Khi client được gán cho PPPoE session nào, IPv4 và IPv6 của client sẽ đi
+theo session đó theo cấu hình routing tương ứng.
 
-Khi tạo DHCP WAN, BoxProxy sẽ:
+IPv6 sử dụng ULA LAN:
 
-1. tạo WAN config;
-2. tạo đúng 1 proxy;
-3. lấy DHCP IPv4;
-4. dựng policy routing;
-5. start DNS;
-6. start Dante;
-7. start Squid;
-8. sync LAN routing.
+``` text
+fd00:10:10:10::/64
+```
 
-Sau reboot, `boxproxy-wan-restore.service` tự phục hồi DHCP WAN.
+và NETMAP sang delegated /64 của PPPoE session.
 
 Kiểm tra:
 
-```bash
-sudo boxproxy wan-json
-sudo boxproxy web-json
-```
-
-## 7. WiFi WAN
-
-V2 hỗ trợ dùng card WiFi Linux ở chế độ client/managed làm WAN. Mỗi WiFi WAN có đúng **1 Proxy Session**, tương tự DHCP WAN.
-
-WebUI cần cho phép cấu hình WiFi WAN với interface, SSID và thông tin kết nối WiFi. Sau khi kết nối thành công, BoxProxy dùng IPv4/gateway/DNS mà WiFi nhận được để dựng policy routing, DNS, Dante và Squid.
-
-Các helper hiện dùng cho WiFi WAN:
-
-```text
-wifi-wan-up
-wifi-wan-down
-instance-egress
-instance-public-ip
-wan-restore
-```
-
-Hook `networkd-dispatcher/routable.d/60-boxproxy-wifi` giúp đồng bộ lại routing khi interface WiFi trở thành routable. `install.sh` V2 cài `networkd-dispatcher` và hook này tự động.
-
-Kiểm tra WiFi WAN:
-
-```bash
-sudo boxproxy wan-json
-ip -4 -br addr show wlp1s0
-ip route show table 102
-ip rule
-systemctl status boxproxy-wan-restore.service --no-pager -l
-```
-
-Trạng thái đã test trên J1900:
-
-```text
-WAN 1: DHCP Ethernet -> enp2s0
-WAN 2: WiFi          -> wlp1s0
-LAN:                    enp3s0 / 10.10.10.1
-```
-
-Cả DHCP Ethernet WAN và WiFi WAN đã được kiểm tra với SOCKS5/HTTP và LAN Routing theo MAC.
-
-> Cellular/WWAN không thuộc phạm vi V2 hiện tại. Nếu cần WWAN, dự kiến dùng giải pháp riêng (ví dụ OpenWrt) thay vì tích hợp vào BoxProxy V2 này.
-
-## 8. Routing DHCP/WiFi WAN
-
-Ví dụ DHCP Ethernet WAN:
-
-```text
-IP: 192.168.2.18/24
-Gateway: 192.168.2.1
-```
-
-Kiểm tra table:
-
-```bash
-ip route show table 101
+``` bash
+sudo ip6tables -t nat -L POSTROUTING -nv --line-numbers
 ```
 
 Ví dụ:
 
-```text
-default via 192.168.2.1 dev ens33 metric 10
-unreachable default metric 42760
-192.168.2.0/24 dev ens33 scope link src 192.168.2.18
+``` text
+NETMAP ... out ppp01 source fd00:10:10:10::/64 to:2402:800:6318:4183::/64
+NETMAP ... out ppp02 source fd00:10:10:10::/64 to:2402:800:6318:3829::/64
 ```
 
-Kiểm tra rule:
+Đây là phần routing IPv6 tương ứng với cách V2 định tuyến IPv4 theo MAC.
 
-```bash
-ip rule
-```
-
-Ví dụ:
-
-```text
-1001: from 192.168.2.18 lookup 101
-2001: from all fwmark 0x2711 lookup 101
-```
-
-## 9. LAN Routing và fail-close
+## 12. Client routing service
 
 Kiểm tra:
 
-```bash
-sudo boxproxy client-json
-sudo iptables -S FORWARD
-sudo iptables -t nat -S POSTROUTING
-sudo iptables -t mangle -S PREROUTING
-```
-
-Client chưa map phải bị chặn bởi `BOXPROXY-FAILCLOSE`.
-
-## 10. DDNS No-IP
-
-Mỗi WAN có thể có một DDNS.
-
-DDNS của WAN lấy public IPv4 của **Proxy có ID nhỏ nhất thuộc WAN đó**.
-
-WebUI hỗ trợ:
-
-```text
-Enable DDNS
-Provider: No-IP
-Hostname
-Username
-Password
-Check Interval (seconds)
-```
-
-Interval tối thiểu:
-
-```text
-30 giây
-```
-
-Password DDNS không được render ngược ra WebUI. Để trống ô Password khi Save sẽ giữ password cũ.
-
-Timer:
-
-```text
-boxproxy-ddns.timer
-```
-
-gọi:
-
-```text
-boxproxy-ddns.service
- -> ddns-sync-all
- -> ddns-update <WAN_ID>
-```
-
-Kiểm tra:
-
-```bash
-systemctl status boxproxy-ddns.timer --no-pager
-systemctl list-timers --all | grep boxproxy-ddns
-journalctl -u boxproxy-ddns.service -n 50 --no-pager
-```
-
-Kiểm tra DDNS thủ công:
-
-```bash
-sudo /usr/local/lib/boxproxy/ddns-config get 1
-sudo /usr/local/lib/boxproxy/instance-public-ip 1
-sudo /usr/local/lib/boxproxy/ddns-update 1
-```
-
-No-IP thành công có thể trả:
-
-```text
-good <PUBLIC_IP>
-```
-
-hoặc:
-
-```text
-nochg <PUBLIC_IP>
-```
-
-## 11. DHCP WAN sau modem và port-forward
-
-Ví dụ:
-
-```text
-BoxProxy WAN local IP: 192.168.2.18
-Public IPv4:           116.x.x.x
-```
-
-DDNS trỏ tới public IPv4.
-
-Muốn dùng proxy từ Internet, modem/router phía trước cần port-forward, ví dụ:
-
-```text
-TCP 3901 -> 192.168.2.18:3901
-TCP 4901 -> 192.168.2.18:4901
-```
-
-Nên đặt DHCP reservation cho local WAN IP của BoxProxy.
-
-## 12. Kiểm tra service V2
-
-```bash
-systemctl is-active boxproxy-web.service
-systemctl is-active boxproxy-wan-restore.service
-systemctl is-active boxproxy-ddns.timer
+``` bash
 systemctl is-active boxproxy-client-routing.service
 ```
 
-Proxy #1 đang bật:
+Các helper V3 liên quan gồm:
 
-```bash
-systemctl is-active boxproxy-dante@1.service
-systemctl is-active boxproxy-squid@1.service
-systemctl is-active boxproxy-dns@1.service
+``` text
+client-route-sync
+client-route-sync-wait
+client-route-up
+ipv6-pd-prefix
+ipv6-pd-run
+ipv6-slots-apply
 ```
 
-## 13. Test SOCKS5/HTTP
+Service bổ sung:
 
-Từ Windows LAN:
+``` text
+boxproxy-client-routing-refresh.service
+boxproxy-ipv6-pd@.service
+```
 
-```powershell
+## 13. PPP IPv6 hook
+
+V3 cài hook:
+
+``` text
+/etc/ppp/ipv6-up.d/98-boxproxy-ipv6
+```
+
+Kiểm tra:
+
+``` bash
+ls -l /etc/ppp/ipv6-up.d/98-boxproxy-ipv6
+```
+
+DHCPv6-PD hook:
+
+``` text
+/lib/dhcpcd/dhcpcd-hooks/99-boxproxy-pd
+```
+
+Kiểm tra:
+
+``` bash
+ls -l /lib/dhcpcd/dhcpcd-hooks/99-boxproxy-pd
+```
+
+## 14. Kiểm tra nhanh V3
+
+Ví dụ với hai PPPoE:
+
+``` bash
+echo "===== PPP ====="
+systemctl is-active boxproxy-pppoe@1.service
+systemctl is-active boxproxy-pppoe@2.service
+
+echo
+echo "===== IPV6 PD ====="
+systemctl is-active boxproxy-ipv6-pd@1.service
+systemctl is-active boxproxy-ipv6-pd@2.service
+
+echo
+echo "===== PREFIX ====="
+sudo /usr/local/lib/boxproxy/ipv6-pd-prefix 1
+sudo /usr/local/lib/boxproxy/ipv6-pd-prefix 2
+
+echo
+echo "===== PPP IPV6 ====="
+ip -6 -br addr show dev ppp01
+ip -6 -br addr show dev ppp02
+
+echo
+echo "===== CLIENT ROUTING ====="
+systemctl is-active boxproxy-client-routing.service
+
+echo
+echo "===== NETMAP ====="
+sudo ip6tables -t nat -L POSTROUTING -nv --line-numbers
+```
+
+## 15. Test IPv4 proxy
+
+SOCKS5:
+
+``` powershell
 curl.exe --socks5-hostname USER:PASS@10.10.10.1:3901 https://api.ipify.org
+```
+
+HTTP:
+
+``` powershell
 curl.exe -x http://USER:PASS@10.10.10.1:4901 https://api.ipify.org
 ```
 
-## 14. Reboot test
+## 16. Test IPv6 từ LAN client
 
-```bash
+Trước tiên kiểm tra client có ULA:
+
+Windows:
+
+``` powershell
+ipconfig
+```
+
+Linux:
+
+``` bash
+ip -6 addr
+```
+
+Sau đó:
+
+``` powershell
+curl.exe -6 https://api64.ipify.org
+```
+
+hoặc Linux:
+
+``` bash
+curl -6 https://api64.ipify.org
+```
+
+Khi đổi MAC routing của client sang PPPoE session khác, IPv6 public phải
+chuyển sang prefix/session tương ứng.
+
+## 17. Test sau reboot
+
+``` bash
 sudo reboot
 ```
 
-Sau reboot, không bấm Start WAN thủ công.
-
-```bash
-ip -br addr
-ip rule
-ip route show table 101
-
-systemctl status boxproxy-wan-restore.service --no-pager -l
-systemctl is-active boxproxy-dante@1.service
-systemctl is-active boxproxy-squid@1.service
-systemctl is-active boxproxy-dns@1.service
-```
-
----
-
-# Nâng cấp BoxProxy V1 đang chạy sang V2
-
-## 15. Không chạy lại install.sh
-
-Trên máy V1 production, **không chạy**:
-
-```bash
-sudo bash install.sh
-```
-
-Nâng cấp tại chỗ phải giữ nguyên `/etc/boxproxy` và network config.
-
-## 16. Backup V1
-
-```bash
-STAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP="/root/boxproxy-v1-backup-$STAMP"
-
-sudo mkdir -p "$BACKUP"
-
-sudo cp -a /etc/boxproxy "$BACKUP/"
-sudo cp -a /opt/boxproxy-web "$BACKUP/" 2>/dev/null || true
-sudo cp -a /usr/local/lib/boxproxy "$BACKUP/" 2>/dev/null || true
-sudo cp -a /usr/local/sbin/boxproxy "$BACKUP/" 2>/dev/null || true
-sudo cp -a /etc/systemd/system/boxproxy-* "$BACKUP/" 2>/dev/null || true
-sudo cp -a /etc/ppp/ip-up.d "$BACKUP/ppp-ip-up.d" 2>/dev/null || true
-sudo cp -a /etc/ppp/ip-down.d "$BACKUP/ppp-ip-down.d" 2>/dev/null || true
-sudo cp -a /etc/netplan "$BACKUP/" 2>/dev/null || true
-
-echo "$BACKUP"
-```
-
-## 17. Chuyển source sang V2
-
-```bash
-cd ~/boxproxy
-
-git status
-git fetch origin
-git checkout v2-dev
-git pull origin v2-dev
-```
+Sau khi máy lên, không vội thao tác Start thủ công.
 
 Kiểm tra:
 
-```bash
-git branch --show-current
-git log --oneline -5
+``` bash
+systemctl is-active boxproxy-web.service
+systemctl is-active boxproxy-client-routing.service
+systemctl is-active radvd.service
+
+systemctl is-active boxproxy-pppoe@1.service
+systemctl is-active boxproxy-ipv6-pd@1.service
+
+ip -6 addr show dev ppp01
+sudo /usr/local/lib/boxproxy/ipv6-pd-prefix 1
+
+sudo ip6tables -t nat -L POSTROUTING -nv --line-numbers
 ```
 
-## 18. Deploy V2 nhưng giữ config V1
+## 18. DHCP và WiFi WAN
 
-CLI:
+Các chức năng DHCP Ethernet WAN và WiFi WAN của V2 vẫn được giữ lại.
 
-```bash
-sudo install -m 755 bin/boxproxy /usr/local/sbin/boxproxy
+Quy tắc hiện tại:
+
+``` text
+1 DHCP WAN = 1 Proxy Session
+1 WiFi WAN = 1 Proxy Session
 ```
 
-Libraries:
+Các WAN này vẫn dùng cơ chế V2 cho IPv4.
 
-```bash
-for FILE in lib/*; do
-  [ -f "$FILE" ] || continue
-  sudo install -m 755 "$FILE" "/usr/local/lib/boxproxy/$(basename "$FILE")"
-done
-```
+Phần IPv6-PD V3 được phát triển/test chủ yếu cho PPPoE multi-session.
+Không nên coi DHCP/WiFi IPv6 là đã hoàn tất nếu chưa test riêng.
 
-PPP hooks:
+## 19. DDNS
 
-```bash
-for FILE in ppp-hooks/ip-up.d/*; do
-  [ -f "$FILE" ] || continue
-  sudo install -m 755 "$FILE" "/etc/ppp/ip-up.d/$(basename "$FILE")"
-done
-
-for FILE in ppp-hooks/ip-down.d/*; do
-  [ -f "$FILE" ] || continue
-  sudo install -m 755 "$FILE" "/etc/ppp/ip-down.d/$(basename "$FILE")"
-done
-```
-
-WebUI:
-
-```bash
-sudo install -d -m 755 /opt/boxproxy-web/templates
-sudo install -m 644 web/app.py /opt/boxproxy-web/app.py
-sudo install -m 644 web/templates/index.html /opt/boxproxy-web/templates/index.html
-sudo install -m 644 web/templates/routing.html /opt/boxproxy-web/templates/routing.html
-```
-
-Systemd:
-
-```bash
-for SERVICE in systemd/*; do
-  [ -f "$SERVICE" ] || continue
-  sudo install -m 644 "$SERVICE" "/etc/systemd/system/$(basename "$SERVICE")"
-done
-```
-
-DDNS directory:
-
-```bash
-sudo test -d /etc/boxproxy/ddns && echo "DDNS directory: OK"
-```
-
-Không xóa hoặc tạo lại:
-
-```text
-/etc/boxproxy/wans/
-/etc/boxproxy/instances/
-/etc/boxproxy/client-routes/
-/etc/boxproxy/settings.conf
-```
-
-V1 config không có `WAN_TYPE` được V2 hiểu mặc định là PPPoE.
-
-## 19. Update sudoers
-
-```bash
-systemctl cat boxproxy-web.service | grep '^User='
-sudo visudo -f /etc/sudoers.d/boxproxy-web
-```
-
-Ví dụ:
-
-```text
-ubuntu ALL=(root) NOPASSWD: /usr/local/sbin/boxproxy
-ubuntu ALL=(root) NOPASSWD: /usr/local/lib/boxproxy/ddns-config
-```
+DDNS No-IP của V2 vẫn được giữ.
 
 Kiểm tra:
 
-```bash
-sudo visudo -c
+``` bash
+systemctl is-active boxproxy-ddns.timer
+systemctl list-timers --all | grep boxproxy-ddns
 ```
 
-## 20. Enable service V2
+DDNS hiện vẫn chủ yếu phục vụ public IPv4 theo thiết kế V2.
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable boxproxy-wan-restore.service
-sudo systemctl enable boxproxy-ddns.timer
-sudo systemctl enable boxproxy-client-routing.service
-sudo systemctl enable boxproxy-web.service
-```
+## 20. Validation source
 
-## 21. Validation trước reboot
+Trước khi commit/deploy:
 
-```bash
+``` bash
 cd ~/boxproxy
 
+bash -n install.sh
 bash -n bin/boxproxy
 
 for f in lib/*; do
-  [ -f "$f" ] || continue
-  bash -n "$f" || exit 1
+    [ -f "$f" ] || continue
+    bash -n "$f" || exit 1
+done
+
+for f in \
+    ppp-hooks/ip-up.d/* \
+    ppp-hooks/ip-down.d/* \
+    ppp-hooks/ipv6-up.d/*; do
+    [ -f "$f" ] || continue
+    bash -n "$f" || exit 1
 done
 
 python3 -m py_compile web/app.py
+
 git diff --check
-
-sudo /usr/local/lib/boxproxy/sync-pppoe-secrets
+git status -sb
 ```
 
-Restart WebUI:
+## 21. Các vị trí quan trọng
 
-```bash
-sudo systemctl restart boxproxy-web.service
-systemctl is-active boxproxy-web.service
+``` text
+Repo:                   ~/boxproxy
+CLI:                    /usr/local/sbin/boxproxy
+Libraries:              /usr/local/lib/boxproxy/
+WebUI:                  /opt/boxproxy-web/
+
+Main config:            /etc/boxproxy/settings.conf
+WAN:                    /etc/boxproxy/wans/
+Proxy instances:        /etc/boxproxy/instances/
+
+Dante:                  /etc/boxproxy/dante/
+Squid:                  /etc/boxproxy/squid/
+DNS:                    /etc/boxproxy/dns/
+
+LAN routing:            /etc/boxproxy/client-routes/
+DDNS:                   /etc/boxproxy/ddns/
+
+IPv6 PD UUID/state:     /etc/boxproxy/ipv6-pd-uuid/
+IPv6 slots:             /etc/boxproxy/ipv6-slots/
+
+PPP IPv6 hook:          /etc/ppp/ipv6-up.d/98-boxproxy-ipv6
+dhcpcd PD hook:         /lib/dhcpcd/dhcpcd-hooks/99-boxproxy-pd
+
+radvd:                  /etc/radvd.conf
+Systemd:                /etc/systemd/system/boxproxy-*
 ```
 
-## 22. Reboot sau nâng cấp
+## 22. Trạng thái V3 đã test trên máy J1900
 
-```bash
-sudo reboot
+Đã xác nhận trong quá trình phát triển:
+
+-   Hai PPPoE session chạy đồng thời.
+-   Hai PPPoE có IPv6 global.
+-   Mỗi PPPoE nhận delegated `/64` riêng.
+-   `boxproxy-ipv6-pd@1` và `@2` hoạt động.
+-   Stop PPPoE dừng PD tương ứng.
+-   Start PPPoE khởi động lại PD.
+-   Change MAC reconnect PPPoE và PD.
+-   Prefix có thể thay đổi sau reconnect.
+-   IPv6 NETMAP được tạo theo từng PPPoE session.
+-   `boxproxy-client-routing.service` hoạt động cùng IPv6 routing.
+-   Source V3 đã commit và push lên `v2-dev`.
+
+Ví dụ trạng thái đã test:
+
+``` text
+PPP #1: active
+PPP #2: active
+
+IPv6 PD #1: active
+IPv6 PD #2: active
+
+PD #1: 2402:800:6318:4183::/64
+PD #2: 2402:800:6318:3829::/64
 ```
 
-Sau reboot:
+## 23. Lưu ý khi test trên VMware
 
-```bash
-sudo boxproxy wan-json
-sudo boxproxy web-json
+Có thể dùng VMware để kiểm tra:
 
-ip -br addr
-ip rule
+-   installer;
+-   WebUI;
+-   service lifecycle;
+-   cấu hình PPPoE nếu mạng test cho phép;
+-   IPv4;
+-   syntax và reboot restore.
 
-systemctl is-active boxproxy-web.service
-systemctl is-active boxproxy-client-routing.service
-systemctl is-active boxproxy-wan-restore.service
-systemctl is-active boxproxy-ddns.timer
-```
+Tuy nhiên việc xác nhận **IPv6 DHCPv6-PD thực tế** phụ thuộc ISP/router
+và cách card mạng VMware được bridge. Kết quả IPv6-PD trên VMware không
+thay thế hoàn toàn bài test trên máy vật lý J1900.
 
-PPPoE cũ:
+## 24. Nâng cấp máy đang chạy
 
-```bash
-ps aux | grep '[p]ppd'
-sudo ss -lntup | grep -E 'danted|squid'
-```
+Không nên dùng quy trình nâng cấp V2 cũ một cách máy móc cho máy
+production V3.
 
-Test từng proxy trước khi kết luận nâng cấp thành công.
+V3 thay đổi:
 
-## 23. Vị trí quan trọng
+-   sysctl IPv6;
+-   netplan LAN IPv6;
+-   `radvd`;
+-   PPP IPv6 hooks;
+-   dhcpcd hooks;
+-   systemd PD services;
+-   routing IPv6.
 
-```text
-Repo:                  ~/boxproxy
-CLI:                   /usr/local/sbin/boxproxy
-Libraries:             /usr/local/lib/boxproxy/
-WebUI:                 /opt/boxproxy-web/
-Main config:           /etc/boxproxy/settings.conf
-WAN:                   /etc/boxproxy/wans/
-Proxy instances:       /etc/boxproxy/instances/
-Dante:                 /etc/boxproxy/dante/
-Squid:                 /etc/boxproxy/squid/
-DNS:                   /etc/boxproxy/dns/
-LAN client routing:    /etc/boxproxy/client-routes/
-DDNS:                  /etc/boxproxy/ddns/
-DDNS runtime state:    /run/boxproxy/ddns/
-Systemd:               /etc/systemd/system/boxproxy-*.service
-                       /etc/systemd/system/boxproxy-*.timer
-```
+Với máy đang chạy ổn định, phải backup `/etc/boxproxy`, netplan, PPP
+hooks và systemd trước khi nâng cấp.
 
-## 24. Trạng thái V2 đã test
-
-Đã test trong quá trình phát triển:
-
-- PPPoE multi-session V1.
-- Start / Stop / Restart PPPoE.
-- Change MAC PPPoE.
-- Change Password proxy.
-- SOCKS5 authentication.
-- SOCKS5 UDP relay.
-- HTTP authenticated proxy.
-- LAN routing theo MAC.
-- MSS 1452 cho LAN -> PPPoE.
-- Fail-close client chưa map.
-- DHCP WAN.
-- DHCP WAN đúng 1 proxy.
-- DHCP SOCKS5/HTTP.
-- DHCP LAN Routing.
-- DHCP Proxy ON/OFF.
-- DHCP Change Password.
-- DHCP tự restore sau reboot.
-- No-IP DDNS.
-- DDNS chỉ update khi public IP thay đổi.
-- DDNS interval theo giây từ WebUI.
-- WiFi WAN.
-- WiFi SOCKS5/HTTP.
-- WiFi LAN Routing theo MAC.
-- WiFi tự restore/routing sync sau khi interface routable.
-- Installer V2 cài `networkd-dispatcher` và WiFi hook.
-- WebUI hỗ trợ PPPoE/DHCP/WiFi + DDNS.
-- Cellular/WWAN không nằm trong BoxProxy V2 hiện tại.
+Trong giai đoạn V3 đang test, ưu tiên **fresh install trên máy
+test/VMware** trước khi xây dựng quy trình nâng cấp production chính
+thức.
