@@ -10,19 +10,73 @@ OUT="/etc/boxproxy/dante/${ID}.conf"
 
 eval "$(/usr/local/lib/boxproxy/instance-egress "$ID")"
 
-if [ -z "${EGRESS_IF:-}" ] || [ -z "${EGRESS_IP:-}" ]; then
-    echo "No egress available for instance $ID"
+[ -n "${EGRESS_IF:-}" ] || {
+    echo "No egress interface for instance $ID"
     exit 1
-fi
+}
 
-cat > "$OUT" <<EOF
-logoutput: syslog
+case "$IP_MODE" in
+    ipv4)
+        [ -n "${EGRESS_IP:-}" ] || {
+            echo "No IPv4 egress for instance $ID"
+            exit 1
+        }
+        ;;
 
-# Accept SOCKS5 from LAN and from the current egress IPv4.
-internal: 10.10.10.1 port = ${SOCKS_PORT}
-internal: ${EGRESS_IP} port = ${SOCKS_PORT}
+    dual)
+        [ -n "${EGRESS_IP:-}" ] || {
+            echo "No IPv4 egress for instance $ID"
+            exit 1
+        }
 
-external: ${EGRESS_IF}
+        [ -n "${EGRESS_IPV6:-}" ] || {
+            echo "No IPv6 egress for instance $ID"
+            exit 1
+        }
+        ;;
+
+    ipv6)
+        [ -n "${EGRESS_IPV6:-}" ] || {
+            echo "No IPv6 egress for instance $ID"
+            exit 1
+        }
+        ;;
+
+    *)
+        echo "Invalid IP mode: $IP_MODE"
+        exit 1
+        ;;
+esac
+
+{
+    echo "logoutput: syslog"
+    echo
+    echo "internal: 10.10.10.1 port = ${SOCKS_PORT}"
+
+    case "$IP_MODE" in
+        ipv4)
+            echo "internal: ${EGRESS_IP} port = ${SOCKS_PORT}"
+            echo
+            echo "external: ${EGRESS_IP}"
+            ;;
+
+        dual)
+            echo "internal: ${EGRESS_IP} port = ${SOCKS_PORT}"
+            echo "internal: ${EGRESS_IPV6} port = ${SOCKS_PORT}"
+            echo
+            echo "external: ${EGRESS_IP}"
+            echo "external: ${EGRESS_IPV6}"
+            echo "external.rotation: route"
+            ;;
+
+        ipv6)
+            echo "internal: ${EGRESS_IPV6} port = ${SOCKS_PORT}"
+            echo
+            echo "external: ${EGRESS_IPV6}"
+            ;;
+    esac
+
+    cat <<'EOF'
 
 clientmethod: none
 socksmethod: username
@@ -30,11 +84,27 @@ socksmethod: username
 user.privileged: root
 user.notprivileged: nobody
 user.libwrap: nobody
+EOF
 
-client pass {
-    from: 0.0.0.0/0 to: 0.0.0.0/0
-    log: connect disconnect error
-}
+    # Client ACL.
+    echo
+    echo "client pass {"
+    echo "    from: 0.0.0.0/0 to: 0.0.0.0/0"
+    echo "    log: connect disconnect error"
+    echo "}"
+
+    if [ "$IP_MODE" != "ipv4" ]; then
+        echo
+        echo "client pass {"
+        echo "    from: ::/0 to: ::/0"
+        echo "    log: connect disconnect error"
+        echo "}"
+    fi
+
+    # SOCKS TCP/UDP request ACLs.
+    case "$IP_MODE" in
+        ipv4)
+            cat <<'EOF'
 
 socks pass {
     from: 0.0.0.0/0 to: 0.0.0.0/0
@@ -49,5 +119,97 @@ socks pass {
     log: connect disconnect error
 }
 EOF
+            ;;
+
+        dual)
+            cat <<'EOF'
+
+socks pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    command: connect udpassociate
+    socksmethod: username
+    log: connect disconnect error
+}
+
+socks pass {
+    from: 0.0.0.0/0 to: ::/0
+    command: connect udpassociate
+    socksmethod: username
+    log: connect disconnect error
+}
+
+socks pass {
+    from: ::/0 to: 0.0.0.0/0
+    command: connect udpassociate
+    socksmethod: username
+    log: connect disconnect error
+}
+
+socks pass {
+    from: ::/0 to: ::/0
+    command: connect udpassociate
+    socksmethod: username
+    log: connect disconnect error
+}
+
+socks pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    command: udpreply
+    log: connect disconnect error
+}
+
+socks pass {
+    from: 0.0.0.0/0 to: ::/0
+    command: udpreply
+    log: connect disconnect error
+}
+
+socks pass {
+    from: ::/0 to: 0.0.0.0/0
+    command: udpreply
+    log: connect disconnect error
+}
+
+socks pass {
+    from: ::/0 to: ::/0
+    command: udpreply
+    log: connect disconnect error
+}
+EOF
+            ;;
+
+        ipv6)
+            cat <<'EOF'
+
+socks pass {
+    from: 0.0.0.0/0 to: ::/0
+    command: connect udpassociate
+    socksmethod: username
+    log: connect disconnect error
+}
+
+socks pass {
+    from: ::/0 to: ::/0
+    command: connect udpassociate
+    socksmethod: username
+    log: connect disconnect error
+}
+
+socks pass {
+    from: 0.0.0.0/0 to: ::/0
+    command: udpreply
+    log: connect disconnect error
+}
+
+socks pass {
+    from: ::/0 to: ::/0
+    command: udpreply
+    log: connect disconnect error
+}
+EOF
+            ;;
+    esac
+
+} > "$OUT"
 
 chmod 600 "$OUT"

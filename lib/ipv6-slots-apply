@@ -1,0 +1,46 @@
+#!/bin/bash
+set -e
+
+INSTANCE_ID="$1"
+
+if [ -z "$INSTANCE_ID" ]; then
+    echo "Usage: ipv6-slots-apply <instance_id>"
+    exit 1
+fi
+
+INSTANCE_CONF="/etc/boxproxy/instances/${INSTANCE_ID}.conf"
+SLOT_DIR="/etc/boxproxy/ipv6-slots/${INSTANCE_ID}"
+
+[ -f "$INSTANCE_CONF" ] || {
+    echo "Instance $INSTANCE_ID does not exist"
+    exit 1
+}
+
+[ -d "$SLOT_DIR" ] || exit 0
+
+# Trước tiên gán lại toàn bộ extra IPv6 + policy rule
+/usr/local/lib/boxproxy/ipv6-slots-sync "$INSTANCE_ID"
+
+for SLOT_CONF in "$SLOT_DIR"/*.conf; do
+    [ -f "$SLOT_CONF" ] || continue
+
+    unset SLOT_ID
+    . "$SLOT_CONF"
+
+    [ -n "${SLOT_ID:-}" ] || continue
+
+    # Tạo/update auth
+    /usr/local/lib/boxproxy/ipv6-slot-auth-sync \
+        "$INSTANCE_ID" \
+        "$SLOT_ID"
+
+    # Restart SOCKS5 slot
+    systemctl restart \
+        "boxproxy-ipv6-dante@${INSTANCE_ID}-${SLOT_ID}.service"
+
+    # Restart HTTP slot
+    systemctl restart \
+        "boxproxy-ipv6-squid@${INSTANCE_ID}-${SLOT_ID}.service"
+
+    echo "IPv6 slot $INSTANCE_ID-$SLOT_ID ready"
+done

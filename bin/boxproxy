@@ -6,13 +6,78 @@ ID="$2"
 ARG3="$3"
 ARG4="$4"
 ARG5="$5"
+ARG6="$6"
 
 if [ -z "$ACTION" ]; then
     echo "Usage: boxproxy {start|stop|restart|change-mac|change-password|status|set-count|list|copy-socks|copy-http|web-json} <id/count>"
     exit 1
 fi
 
-    case "$ACTION" in
+    wan_up_internal() {
+    local TARGET_WAN="$1"
+    local WAN_CONF="/etc/boxproxy/wans/${TARGET_WAN}.conf"
+    local WAN_TYPE
+    local CONF
+    local INSTANCE_ID
+
+    if [ ! -f "$WAN_CONF" ]; then
+        echo "WAN $TARGET_WAN does not exist"
+        return 1
+    fi
+
+    unset WAN_TYPE PARENT_IF
+    . "$WAN_CONF"
+
+    WAN_TYPE="${WAN_TYPE:-pppoe}"
+
+    case "$WAN_TYPE" in
+        dhcp)
+            /usr/local/lib/boxproxy/dhcp-wan-up "$TARGET_WAN"
+            ;;
+        wifi)
+            /usr/local/lib/boxproxy/wifi-wan-up "$TARGET_WAN"
+            ;;
+        *)
+            echo "Internal WAN start supports DHCP/WiFi WAN only"
+            return 1
+            ;;
+    esac
+
+    for i in $(seq 1 30); do
+        if ip -4 -o addr show dev "$PARENT_IF" 2>/dev/null | grep -q 'inet '; then
+            break
+        fi
+        sleep 1
+    done
+
+    if ! ip -4 -o addr show dev "$PARENT_IF" 2>/dev/null | grep -q 'inet '; then
+        echo "$WAN_TYPE WAN $TARGET_WAN did not get IPv4"
+        return 1
+    fi
+
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        unset WAN_ID PROXY_ENABLED
+        . "$CONF"
+
+        [ "$WAN_ID" = "$TARGET_WAN" ] || continue
+
+        INSTANCE_ID=$(basename "$CONF" .conf)
+
+        /usr/local/lib/boxproxy/routing-up "$INSTANCE_ID"
+
+        if [ "${PROXY_ENABLED:-yes}" = "yes" ]; then
+            systemctl restart "boxproxy-dns@${INSTANCE_ID}.service"
+            systemctl restart "boxproxy-dante@${INSTANCE_ID}.service"
+            systemctl restart "boxproxy-squid@${INSTANCE_ID}.service"
+        fi
+    done
+
+    /usr/local/lib/boxproxy/client-route-sync
+}
+
+case "$ACTION" in
 	list|copy-socks|copy-http|web-json|wan-json|free-interfaces|client-json|client-ip-json)
         ;;
 
@@ -43,9 +108,9 @@ if [[ "$ACTION" != "set-count" &&
       "$ACTION" != "client-ip-remove" &&
       "$ACTION" != "wan-add" &&
       "$ACTION" != "wan-add-dhcp" &&
-      "$ACTION" != "wan-start" &&
-      "$ACTION" != "wan-stop" &&
+      "$ACTION" != "wan-add-wifi" &&
       "$ACTION" != "wan-save" &&
+      "$ACTION" != "wan-save-wifi" &&
       "$ACTION" != "wan-delete" &&
       "$ACTION" != "wan-proxy-enable" &&
       "$ACTION" != "wan-proxy-disable" ]] &&
@@ -68,6 +133,13 @@ case "$ACTION" in
     systemctl reset-failed "boxproxy-pppoe@${ID}.service" 2>/dev/null || true
     systemctl start "boxproxy-pppoe@${ID}.service"
 
+    case "${IP_MODE:-ipv4}" in
+        dual|ipv6)
+            systemctl reset-failed "boxproxy-ipv6-pd@${ID}.service" 2>/dev/null || true
+            systemctl start "boxproxy-ipv6-pd@${ID}.service"
+            ;;
+    esac
+
     PPP_IP=$(ip -4 -o addr show dev "$PPP_IF" 2>/dev/null \
         | awk '{print $4}' \
         | cut -d/ -f1 \
@@ -85,10 +157,12 @@ case "$ACTION" in
     stop)
     systemctl stop "boxproxy-dante@${ID}.service" || true
     systemctl stop "boxproxy-squid@${ID}.service" || true
+    systemctl stop "boxproxy-ipv6-pd@${ID}.service" 2>/dev/null || true
     systemctl stop "boxproxy-pppoe@${ID}.service" || true
     systemctl stop "boxproxy-macvlan@${ID}.service" || true
 
     systemctl reset-failed "boxproxy-pppoe@${ID}.service" 2>/dev/null || true
+    systemctl reset-failed "boxproxy-ipv6-pd@${ID}.service" 2>/dev/null || true
     systemctl reset-failed "boxproxy-dante@${ID}.service" 2>/dev/null || true
     systemctl reset-failed "boxproxy-squid@${ID}.service" 2>/dev/null || true
     systemctl reset-failed "boxproxy-macvlan@${ID}.service" 2>/dev/null || true
@@ -133,14 +207,157 @@ change-mac)
     # Giữ MAC mới, không rollback
     sed -i "s/^MAC=.*/MAC=\"$NEW_MAC\"/" "$CONF"
 
-    # Start các service lại nhưng không bắt Change MAC
-    # phải chờ PPPoE online mới được coi là đổi MAC thành công.
-    systemctl start "boxproxy-macvlan@${ID}.service"
-    systemctl reset-failed "boxproxy-pppoe@${ID}.service" 2>/dev/null || true
-    systemctl start "boxproxy-pppoe@${ID}.service"
+    # Dùng lại lifecycle start để PPPoE và IPv6-PD luôn đi cùng nhau.
+    "$0" start "$ID"
 
     echo "Proxy $ID MAC changed successfully"
     echo "PPPoE is reconnecting in background"
+    ;;
+
+set-ipv6-per-session)
+    TARGET_WAN="$ID"
+    TARGET="$ARG3"
+
+    if [ -z "$TARGET_WAN" ] || [ -z "$TARGET" ]; then
+        echo "Usage: boxproxy set-ipv6-per-session <wan_id> <count>"
+        exit 1
+    fi
+
+    if ! [[ "$TARGET" =~ ^[0-9]+$ ]] || \
+       [ "$TARGET" -lt 1 ] || \
+       [ "$TARGET" -gt 99 ]; then
+        echo "Invalid IPv6 per session count (allowed 1..99)"
+        exit 1
+    fi
+
+    WAN_CONF="/etc/boxproxy/wans/${TARGET_WAN}.conf"
+
+    if [ ! -f "$WAN_CONF" ]; then
+        echo "WAN config not found: $WAN_CONF"
+        exit 1
+    fi
+
+    unset WAN_TYPE IP_MODE IPV6_PER_SESSION
+    . "$WAN_CONF"
+
+    WAN_TYPE="${WAN_TYPE:-pppoe}"
+    IP_MODE="${IP_MODE:-ipv4}"
+    OLD_COUNT="${IPV6_PER_SESSION:-1}"
+
+    if [ "$WAN_TYPE" != "pppoe" ]; then
+        echo "IPv6 per session currently supports PPPoE only"
+        exit 1
+    fi
+
+if [ "$IP_MODE" != "ipv6" ]; then
+    echo "IPv6 per session requires ipv6-only mode"
+    exit 1
+fi
+
+    echo "WAN              : $TARGET_WAN"
+    echo "Current IPv6/PPP : $OLD_COUNT"
+    echo "Target IPv6/PPP  : $TARGET"
+
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        INSTANCE_ID=$(basename "$CONF" .conf)
+
+        unset WAN_ID
+        . "$CONF"
+
+        [ "$WAN_ID" = "$TARGET_WAN" ] || continue
+
+        SLOT_DIR="/etc/boxproxy/ipv6-slots/${INSTANCE_ID}"
+        mkdir -p "$SLOT_DIR"
+        chmod 700 "$SLOT_DIR"
+
+        # Tạo slot 2..TARGET
+        if [ "$TARGET" -ge 2 ]; then
+            for SLOT_ID in $(seq 2 "$TARGET"); do
+                SLOT_CONF="${SLOT_DIR}/${SLOT_ID}.conf"
+
+                if [ ! -f "$SLOT_CONF" ]; then
+                    HOST_ID=$(od -An -N8 -tx1 /dev/urandom \
+                        | tr -d ' \n')
+
+                    cat > "$SLOT_CONF" <<EOF
+SLOT_ID="$SLOT_ID"
+HOST_ID="$HOST_ID"
+EOF
+
+                    chmod 600 "$SLOT_CONF"
+
+                    echo "Created IPv6 slot ${INSTANCE_ID}-${SLOT_ID}"
+                fi
+            done
+        fi
+
+        # Xóa slot lớn hơn TARGET
+        for SLOT_CONF in "$SLOT_DIR"/*.conf; do
+            [ -f "$SLOT_CONF" ] || continue
+
+            SLOT_ID=$(basename "$SLOT_CONF" .conf)
+
+            if [ "$SLOT_ID" -gt "$TARGET" ]; then
+                RULE_PREF=$((10000 + INSTANCE_ID * 100 + SLOT_ID))
+
+	    # Xóa IPv6 address của slot khỏi PPP interface
+if SLOT_INFO=$(
+    /usr/local/lib/boxproxy/ipv6-slot-egress \
+        "$INSTANCE_ID" \
+        "$SLOT_ID" 2>/dev/null
+); then
+    unset SLOT_IPV6
+    eval "$SLOT_INFO"
+
+    if [ -n "${SLOT_IPV6:-}" ] && [ -n "${EGRESS_IF:-}" ]; then
+        ip -6 addr del \
+            "${SLOT_IPV6}/64" \
+            dev "$EGRESS_IF" \
+            >/dev/null 2>&1 || true
+    fi
+fi
+
+                systemctl stop \
+                    "boxproxy-ipv6-dante@${INSTANCE_ID}-${SLOT_ID}.service" \
+                    >/dev/null 2>&1 || true
+
+                systemctl stop \
+                    "boxproxy-ipv6-squid@${INSTANCE_ID}-${SLOT_ID}.service" \
+                    >/dev/null 2>&1 || true
+
+                ip -6 rule del pref "$RULE_PREF" \
+                    >/dev/null 2>&1 || true
+
+                rm -f \
+                    "/etc/boxproxy/dante/${INSTANCE_ID}-v6-${SLOT_ID}.conf" \
+                    "/etc/boxproxy/squid/${INSTANCE_ID}-v6-${SLOT_ID}.conf" \
+                    "$SLOT_CONF"
+
+                echo "Deleted IPv6 slot ${INSTANCE_ID}-${SLOT_ID}"
+            fi
+        done
+
+        if [ "$TARGET" -gt 1 ]; then
+            /usr/local/lib/boxproxy/ipv6-slots-apply \
+                "$INSTANCE_ID"
+        fi
+    done
+
+    # Lưu count mới vào WAN config
+    if grep -q '^IPV6_PER_SESSION=' "$WAN_CONF"; then
+        sed -i \
+            "s/^IPV6_PER_SESSION=.*/IPV6_PER_SESSION=\"$TARGET\"/" \
+            "$WAN_CONF"
+    else
+        sed -i \
+            "/^IP_MODE=/a IPV6_PER_SESSION=\"$TARGET\"" \
+            "$WAN_CONF"
+    fi
+
+    echo
+    echo "IPv6 per session updated to $TARGET"
     ;;
 
         set-count)
@@ -218,6 +435,13 @@ change-mac)
 
                     systemctl enable \
                         "boxproxy-pppoe@${NEW_ID}.service" >/dev/null
+
+                    case "${IP_MODE:-ipv4}" in
+                        dual|ipv6)
+                            systemctl enable \
+                                "boxproxy-ipv6-pd@${NEW_ID}.service" >/dev/null
+                            ;;
+                    esac
 
                     systemctl disable \
                         "boxproxy-dante@${NEW_ID}.service" \
@@ -312,67 +536,244 @@ change-mac)
 
 copy-socks)
     TARGET_WAN="$ID"
+    FAMILY="${ARG3:-all}"
+
+    [ "$TARGET_WAN" = "all" ] && TARGET_WAN=""
+
+    case "$FAMILY" in
+        ipv4|ipv6|all)
+            ;;
+        *)
+            echo "Usage: boxproxy copy-socks <wan_id|all> <ipv4|ipv6>"
+            exit 1
+            ;;
+    esac
 
     for CONF in /etc/boxproxy/instances/*.conf; do
         [ -f "$CONF" ] || continue
 
+        unset WAN_ID WAN_TYPE IP_MODE PROXY_ENABLED
+        unset SOCKS_PORT HTTP_PORT PROXY_USER PROXY_PASSWORD
+
         . "$CONF"
 
-        # Nếu truyền WAN ID thì chỉ lấy proxy thuộc WAN đó
         if [ -n "$TARGET_WAN" ] && [ "$WAN_ID" != "$TARGET_WAN" ]; then
             continue
         fi
 
-        # Chỉ liệt kê proxy đang bật
         if [ "${PROXY_ENABLED:-yes}" != "yes" ]; then
             continue
         fi
 
         INSTANCE_ID=$(basename "$CONF" .conf)
 
-        unset WAN_TYPE EGRESS_IF EGRESS_IP
+        MAIN_SOCKS_PORT="$SOCKS_PORT"
+        MAIN_USER="$PROXY_USER"
+        MAIN_PASS="$PROXY_PASSWORD"
 
-        if PUBLIC_IP=$(
-            /usr/local/lib/boxproxy/instance-public-ip \
+        if ! EGRESS_INFO=$(
+            /usr/local/lib/boxproxy/instance-egress \
                 "$INSTANCE_ID" 2>/dev/null
         ); then
-            [ -n "$PUBLIC_IP" ] && \
-                echo "${PUBLIC_IP}:${SOCKS_PORT}:${PROXY_USER}:${PROXY_PASSWORD}"
+            continue
         fi
 
+        eval "$EGRESS_INFO"
+
+        # ==================================================
+        # IPv4 proxy chính
+        # ==================================================
+        if [ "$FAMILY" = "ipv4" ] || [ "$FAMILY" = "all" ]; then
+            if [ -n "${EGRESS_IP:-}" ]; then
+
+                case "$WAN_TYPE" in
+                    pppoe)
+                        PUBLIC_V4="$EGRESS_IP"
+                        ;;
+
+                    dhcp|wifi)
+                        PUBLIC_V4=$(
+                            /usr/local/lib/boxproxy/instance-public-ip \
+                                "$INSTANCE_ID" 2>/dev/null || true
+                        )
+                        ;;
+
+                    *)
+                        PUBLIC_V4=""
+                        ;;
+                esac
+
+                if [ -n "$PUBLIC_V4" ]; then
+                    echo "${PUBLIC_V4}:${MAIN_SOCKS_PORT}:${MAIN_USER}:${MAIN_PASS}"
+                fi
+            fi
+        fi
+
+        # ==================================================
+        # IPv6 proxy chính
+        # ==================================================
+        if [ "$FAMILY" = "ipv6" ] || [ "$FAMILY" = "all" ]; then
+            if [ -n "${EGRESS_IPV6:-}" ]; then
+                echo "[${EGRESS_IPV6}]:${MAIN_SOCKS_PORT}:${MAIN_USER}:${MAIN_PASS}"
+            fi
+
+            # Extra IPv6 slots
+            SLOT_DIR="/etc/boxproxy/ipv6-slots/${INSTANCE_ID}"
+
+            if [ -d "$SLOT_DIR" ]; then
+    while IFS= read -r SLOT_ID; do
+    [ -n "$SLOT_ID" ] || continue
+
+    SLOT_CONF="${SLOT_DIR}/${SLOT_ID}.conf"
+    [ -f "$SLOT_CONF" ] || continue
+
+                    if SLOT_INFO=$(
+                        /usr/local/lib/boxproxy/ipv6-slot-egress \
+                            "$INSTANCE_ID" \
+                            "$SLOT_ID" 2>/dev/null
+                    ); then
+                        eval "$SLOT_INFO"
+
+                        [ -n "${SLOT_IPV6:-}" ] || continue
+
+                        echo "[${SLOT_IPV6}]:${SOCKS_PORT}:${PROXY_USER}:${PROXY_PASSWORD}"
+                    fi
+
+    done < <(
+        find "$SLOT_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.conf' \
+            -printf '%f\n' \
+        | sed 's/\.conf$//' \
+        | sort -n
+    )
+
+            fi
+        fi
     done
     ;;
 
 copy-http)
     TARGET_WAN="$ID"
+    FAMILY="${ARG3:-all}"
+
+    [ "$TARGET_WAN" = "all" ] && TARGET_WAN=""
+
+    case "$FAMILY" in
+        ipv4|ipv6|all)
+            ;;
+        *)
+            echo "Usage: boxproxy copy-http <wan_id|all> <ipv4|ipv6>"
+            exit 1
+            ;;
+    esac
 
     for CONF in /etc/boxproxy/instances/*.conf; do
         [ -f "$CONF" ] || continue
 
+        unset WAN_ID WAN_TYPE IP_MODE PROXY_ENABLED
+        unset SOCKS_PORT HTTP_PORT PROXY_USER PROXY_PASSWORD
+
         . "$CONF"
 
-        # Nếu truyền WAN ID thì chỉ lấy proxy thuộc WAN đó
         if [ -n "$TARGET_WAN" ] && [ "$WAN_ID" != "$TARGET_WAN" ]; then
             continue
         fi
 
-        # Chỉ liệt kê proxy đang bật
         if [ "${PROXY_ENABLED:-yes}" != "yes" ]; then
             continue
         fi
 
         INSTANCE_ID=$(basename "$CONF" .conf)
 
-        unset WAN_TYPE EGRESS_IF EGRESS_IP
+        MAIN_HTTP_PORT="$HTTP_PORT"
+        MAIN_USER="$PROXY_USER"
+        MAIN_PASS="$PROXY_PASSWORD"
 
-        if PUBLIC_IP=$(
-            /usr/local/lib/boxproxy/instance-public-ip \
+        if ! EGRESS_INFO=$(
+            /usr/local/lib/boxproxy/instance-egress \
                 "$INSTANCE_ID" 2>/dev/null
         ); then
-            [ -n "$PUBLIC_IP" ] && \
-                echo "${PUBLIC_IP}:${HTTP_PORT}:${PROXY_USER}:${PROXY_PASSWORD}"
+            continue
         fi
 
+        eval "$EGRESS_INFO"
+
+        # ==================================================
+        # IPv4 proxy chính
+        # ==================================================
+        if [ "$FAMILY" = "ipv4" ] || [ "$FAMILY" = "all" ]; then
+            if [ -n "${EGRESS_IP:-}" ]; then
+
+                case "$WAN_TYPE" in
+                    pppoe)
+                        PUBLIC_V4="$EGRESS_IP"
+                        ;;
+
+                    dhcp|wifi)
+                        PUBLIC_V4=$(
+                            /usr/local/lib/boxproxy/instance-public-ip \
+                                "$INSTANCE_ID" 2>/dev/null || true
+                        )
+                        ;;
+
+                    *)
+                        PUBLIC_V4=""
+                        ;;
+                esac
+
+                if [ -n "$PUBLIC_V4" ]; then
+                    echo "${PUBLIC_V4}:${MAIN_HTTP_PORT}:${MAIN_USER}:${MAIN_PASS}"
+                fi
+            fi
+        fi
+
+        # ==================================================
+        # IPv6 proxy chính
+        # ==================================================
+        if [ "$FAMILY" = "ipv6" ] || [ "$FAMILY" = "all" ]; then
+            if [ -n "${EGRESS_IPV6:-}" ]; then
+                echo "[${EGRESS_IPV6}]:${MAIN_HTTP_PORT}:${MAIN_USER}:${MAIN_PASS}"
+            fi
+
+            SLOT_DIR="/etc/boxproxy/ipv6-slots/${INSTANCE_ID}"
+
+            if [ -d "$SLOT_DIR" ]; then
+	    while IFS= read -r SLOT_ID; do
+    [ -n "$SLOT_ID" ] || continue
+
+    SLOT_CONF="${SLOT_DIR}/${SLOT_ID}.conf"
+    [ -f "$SLOT_CONF" ] || continue
+
+                    [ -f "$SLOT_CONF" ] || continue
+
+                    SLOT_ID=$(basename "$SLOT_CONF" .conf)
+
+                    if SLOT_INFO=$(
+                        /usr/local/lib/boxproxy/ipv6-slot-egress \
+                            "$INSTANCE_ID" \
+                            "$SLOT_ID" 2>/dev/null
+                    ); then
+                        eval "$SLOT_INFO"
+
+                        [ -n "${SLOT_IPV6:-}" ] || continue
+
+                        echo "[${SLOT_IPV6}]:${HTTP_PORT}:${PROXY_USER}:${PROXY_PASSWORD}"
+                    fi
+
+		done < <(
+    find "$SLOT_DIR" \
+        -maxdepth 1 \
+        -type f \
+        -name '*.conf' \
+        -printf '%f\n' \
+    | sed 's/\.conf$//' \
+    | sort -n
+)
+
+            fi
+        fi
     done
     ;;
 
@@ -510,6 +911,66 @@ echo "New password for ${PROXY_USER}: $NEW_PASS"
     echo "Proxy services disabled for session $ID"
     ;;
 
+ipv6-slots-json)
+    INSTANCE_ID="$ID"
+
+    if [ -z "$INSTANCE_ID" ]; then
+        echo "Usage: boxproxy ipv6-slots-json <instance_id>"
+        exit 1
+    fi
+
+    INSTANCE_CONF="/etc/boxproxy/instances/${INSTANCE_ID}.conf"
+
+    if [ ! -f "$INSTANCE_CONF" ]; then
+        echo "[]"
+        exit 0
+    fi
+
+    SLOT_DIR="/etc/boxproxy/ipv6-slots/${INSTANCE_ID}"
+
+    echo "["
+
+    FIRST_SLOT=1
+
+    if [ -d "$SLOT_DIR" ]; then
+        for SLOT_CONF in "$SLOT_DIR"/*.conf; do
+            [ -f "$SLOT_CONF" ] || continue
+
+            SLOT_ID=$(basename "$SLOT_CONF" .conf)
+
+            if SLOT_INFO=$(
+                /usr/local/lib/boxproxy/ipv6-slot-egress \
+                    "$INSTANCE_ID" \
+                    "$SLOT_ID" 2>/dev/null
+            ); then
+
+                unset SLOT_IPV6 SOCKS_PORT HTTP_PORT
+                unset PROXY_USER PROXY_PASSWORD
+
+                eval "$SLOT_INFO"
+
+                [ -n "${SLOT_IPV6:-}" ] || continue
+
+                if [ "$FIRST_SLOT" -eq 0 ]; then
+                    echo ","
+                fi
+
+                FIRST_SLOT=0
+
+                printf '  {"slot_id":%s,"ipv6":"%s","socks_port":%s,"http_port":%s,"user":"%s"}' \
+                    "$SLOT_ID" \
+                    "$SLOT_IPV6" \
+                    "$SOCKS_PORT" \
+                    "$HTTP_PORT" \
+                    "$PROXY_USER"
+            fi
+        done
+    fi
+
+    echo
+    echo "]"
+    ;;
+
     web-json)
     echo "["
 
@@ -518,9 +979,9 @@ echo "New password for ${PROXY_USER}: $NEW_PASS"
     for CONF in /etc/boxproxy/instances/*.conf; do
         [ -f "$CONF" ] || continue
 
-        unset WAN_ID WAN_TYPE
+	unset WAN_ID WAN_TYPE IP_MODE
         unset MAC MACVLAN_IF PPP_IF PPPOE_PEER
-        unset EGRESS_IF EGRESS_IP
+        unset EGRESS_IF EGRESS_IP EGRESS_IPV6 EGRESS_IPV6_CIDR
         unset SOCKS_PORT HTTP_PORT
         unset PROXY_USER PROXY_ENABLED
 
@@ -530,16 +991,42 @@ echo "New password for ${PROXY_USER}: $NEW_PASS"
 
         INSTANCE_WAN_TYPE="${WAN_TYPE:-pppoe}"
 
-        unset EGRESS_IF EGRESS_IP
+	unset EGRESS_IF EGRESS_IP EGRESS_IPV6 EGRESS_IPV6_CIDR
 
-        if EGRESS_INFO=$(/usr/local/lib/boxproxy/instance-egress "$N" 2>/dev/null); then
-            eval "$EGRESS_INFO"
-            IP="${EGRESS_IP:-}"
-            STATE="online"
-        else
+	if EGRESS_INFO=$(/usr/local/lib/boxproxy/instance-egress "$N" 2>/dev/null); then
+    eval "$EGRESS_INFO"
+
+    IPV4="${EGRESS_IP:-}"
+    IPV6="${EGRESS_IPV6:-}"
+
+    case "${IP_MODE:-ipv4}" in
+        ipv4)
+            IP="$IPV4"
+            ;;
+
+        ipv6)
+            IP="$IPV6"
+            ;;
+
+        dual)
+            # Giữ tương thích code cũ: trường ip ưu tiên IPv4.
+            IP="$IPV4"
+            ;;
+
+        *)
+            IP="$IPV4"
+            ;;
+    esac
+
+    STATE="online"
+else
+
             WAN_TYPE="$INSTANCE_WAN_TYPE"
             EGRESS_IF="${EGRESS_IF:-}"
             EGRESS_IP=""
+	    EGRESS_IPV6=""
+            IPV4=""
+            IPV6=""
             IP=""
             STATE="offline"
         fi
@@ -573,7 +1060,7 @@ echo "New password for ${PROXY_USER}: $NEW_PASS"
 
         FIRST=0
 
-printf '  {"id":%s,"wan_id":%s,"wan_type":"%s","egress_if":"%s","mac":"%s","ppp_if":"%s","ip":"%s","state":"%s","pppoe_state":"%s","socks_port":%s,"http_port":%s,"user":"%s","proxy_enabled":"%s","macvlan_service":"%s","pppoe_service":"%s","socks_service":"%s","http_service":"%s"}' \
+printf '  {"id":%s,"wan_id":%s,"wan_type":"%s","egress_if":"%s","mac":"%s","ppp_if":"%s","ip":"%s","ipv4":"%s","ipv6":"%s","state":"%s","pppoe_state":"%s","socks_port":%s,"http_port":%s,"user":"%s","proxy_enabled":"%s","macvlan_service":"%s","pppoe_service":"%s","socks_service":"%s","http_service":"%s"}' \
             "$N" \
             "$WAN_ID" \
 	    "${WAN_TYPE:-pppoe}" \
@@ -581,6 +1068,8 @@ printf '  {"id":%s,"wan_id":%s,"wan_type":"%s","egress_if":"%s","mac":"%s","ppp_
             "$MAC" \
             "$PPP_IF" \
             "$IP" \
+	    "$IPV4" \
+	    "$IPV6" \
             "$STATE" \
 	    "$PPPOE_PROGRESS" \
             "$SOCKS_PORT" \
@@ -684,149 +1173,6 @@ fi
     echo "Proxy services disabled for WAN $TARGET_WAN"
     ;;
 
-wan-start)
-    TARGET_WAN="$ID"
-    WAN_CONF="/etc/boxproxy/wans/${TARGET_WAN}.conf"
-
-    if [ ! -f "$WAN_CONF" ]; then
-        echo "WAN $TARGET_WAN does not exist"
-        exit 1
-    fi
-
-    unset WAN_TYPE
-    . "$WAN_CONF"
-
-    WAN_TYPE="${WAN_TYPE:-pppoe}"
-
-    case "$WAN_TYPE" in
-
-        dhcp|wifi)
-
-            if [ "$WAN_TYPE" = "dhcp" ]; then
-                /usr/local/lib/boxproxy/dhcp-wan-up "$TARGET_WAN"
-            else
-                /usr/local/lib/boxproxy/wifi-wan-up "$TARGET_WAN"
-            fi
-
-            # Wait for WAN IPv4.
-
-            for i in $(seq 1 30); do
-                if ip -4 -o addr show dev "$PARENT_IF" \
-                    | grep -q 'inet '; then
-                    break
-                fi
-
-                sleep 1
-            done
-
-            if ! ip -4 -o addr show dev "$PARENT_IF" \
-                | grep -q 'inet '; then
-
-                echo "$WAN_TYPE WAN $TARGET_WAN did not get IPv4"
-                exit 1
-
-            fi
-
-            # Rebuild routing and restart services for all instances
-            # belonging to this DHCP/WiFi WAN.
-            for CONF in /etc/boxproxy/instances/*.conf; do
-                [ -f "$CONF" ] || continue
-
-                unset WAN_ID PROXY_ENABLED
-                . "$CONF"
-
-                [ "$WAN_ID" = "$TARGET_WAN" ] || continue
-
-                INSTANCE_ID=$(basename "$CONF" .conf)
-
-                /usr/local/lib/boxproxy/routing-up "$INSTANCE_ID"
-
-                if [ "${PROXY_ENABLED:-yes}" = "yes" ]; then
-                    systemctl restart \
-                        "boxproxy-dns@${INSTANCE_ID}.service"
-
-                    systemctl restart \
-                        "boxproxy-dante@${INSTANCE_ID}.service"
-
-                    systemctl restart \
-                        "boxproxy-squid@${INSTANCE_ID}.service"
-                fi
-            done
-
-            /usr/local/lib/boxproxy/client-route-sync
-            ;;
-
-        *)
-            echo "wan-start currently supports DHCP/WiFi WAN only"
-            exit 1
-            ;;
-
-    esac
-    ;;
-
-wan-stop)
-    TARGET_WAN="$ID"
-    WAN_CONF="/etc/boxproxy/wans/${TARGET_WAN}.conf"
-
-    if [ ! -f "$WAN_CONF" ]; then
-        echo "WAN $TARGET_WAN does not exist"
-        exit 1
-    fi
-
-    unset WAN_TYPE
-    . "$WAN_CONF"
-
-    WAN_TYPE="${WAN_TYPE:-pppoe}"
-
-    case "$WAN_TYPE" in
-
-        dhcp|wifi)
-            # Stop all proxy/DNS services belonging to this WAN first.
-
-            for CONF in /etc/boxproxy/instances/*.conf; do
-                [ -f "$CONF" ] || continue
-
-                unset WAN_ID
-                . "$CONF"
-
-                [ "$WAN_ID" = "$TARGET_WAN" ] || continue
-
-                INSTANCE_ID=$(basename "$CONF" .conf)
-
-                systemctl stop \
-                    "boxproxy-dante@${INSTANCE_ID}.service" \
-                    2>/dev/null || true
-
-                systemctl stop \
-                    "boxproxy-squid@${INSTANCE_ID}.service" \
-                    2>/dev/null || true
-
-                systemctl stop \
-                    "boxproxy-dns@${INSTANCE_ID}.service" \
-                    2>/dev/null || true
-
-                /usr/local/lib/boxproxy/routing-down \
-                    "$INSTANCE_ID" \
-                    2>/dev/null || true
-            done
-
-            if [ "$WAN_TYPE" = "dhcp" ]; then
-                /usr/local/lib/boxproxy/dhcp-wan-down "$TARGET_WAN"
-            else
-                /usr/local/lib/boxproxy/wifi-wan-down "$TARGET_WAN"
-            fi
-
-            /usr/local/lib/boxproxy/client-route-sync \
-                2>/dev/null || true
-            ;;
-
-        *)
-            echo "wan-stop currently supports DHCP/WiFi WAN only"
-            exit 1
-            ;;
-
-    esac
-    ;;
 
 wan-delete)
     TARGET_WAN="$ID"
@@ -1037,7 +1383,7 @@ EOF
 
     echo "Starting DHCP WAN $NEW_WAN_ID..."
 
-    "$0" wan-start "$NEW_WAN_ID"
+    wan_up_internal "$NEW_WAN_ID"
 
     echo "DHCP WAN $NEW_WAN_ID is ready"
     ;;
@@ -1164,7 +1510,7 @@ EOF
 
     echo "Starting WiFi WAN $NEW_WAN_ID..."
 
-    "$0" wan-start "$NEW_WAN_ID"
+    wan_up_internal "$NEW_WAN_ID"
 
     echo "WiFi WAN $NEW_WAN_ID is ready"
     ;;
@@ -1173,9 +1519,27 @@ wan-add)
     NEW_IF="$ID"
     NEW_USER="$ARG3"
     NEW_PASS="$ARG4"
+    NEW_IP_MODE="${ARG5:-ipv4}"
+
+    case "$NEW_IP_MODE" in
+    ipv4|dual|ipv6)
+        ;;
+    *)
+        echo "Invalid IP mode: $NEW_IP_MODE"
+        exit 1
+        ;;
+esac
+
+# IPv6 per Session chỉ áp dụng cho IPv6 Only.
+# IPv4 và Dual luôn cố định 1 địa chỉ mỗi family/session.
+if [ "$NEW_IP_MODE" = "ipv6" ]; then
+    NEW_IPV6_PER_SESSION="$OLD_IPV6_PER_SESSION"
+else
+    NEW_IPV6_PER_SESSION="1"
+fi
 
     if [ -z "$NEW_IF" ] || [ -z "$NEW_USER" ] || [ -z "$NEW_PASS" ]; then
-        echo "Usage: boxproxy wan-add <interface> <user> <password>"
+	echo "Usage: boxproxy wan-add <interface> <user> <password> [ipv4|dual|ipv6]"
         exit 1
     fi
 
@@ -1218,7 +1582,7 @@ fi
 
     WAN_CONF="/etc/boxproxy/wans/${NEW_WAN_ID}.conf"
 
-    cat > "$WAN_CONF" <<EOF
+cat > "$WAN_CONF" <<EOF
 WAN_ID="$NEW_WAN_ID"
 WAN_TYPE="pppoe"
 PARENT_IF="$NEW_IF"
@@ -1226,6 +1590,9 @@ PARENT_MAC="$NEW_MAC"
 
 PPPOE_USER="$NEW_USER"
 PPPOE_PASSWORD="$NEW_PASS"
+
+IP_MODE="$NEW_IP_MODE"
+IPV6_PER_SESSION="$NEW_IPV6_PER_SESSION"
 
 WAN_PROXY_ENABLED="yes"
 EOF
@@ -1255,11 +1622,15 @@ unset PPPOE_USER
 unset WIFI_SSID
 unset WIFI_BAND
 unset WAN_PROXY_ENABLED
+unset IP_MODE
+unset IPV6_PER_SESSION
 
         . "$WAN_CONF"
 
         # Backward compatibility with BoxProxy V1 WAN configs.
         WAN_TYPE="${WAN_TYPE:-pppoe}"
+	IP_MODE="${IP_MODE:-ipv4}"
+	IPV6_PER_SESSION="${IPV6_PER_SESSION:-1}"
 
         COUNT=0
         ANY_PROXY_ENABLED="no"
@@ -1289,13 +1660,15 @@ done
 
         FIRST=0
 
-printf '  {"wan_id":%s,"wan_type":"%s","interface":"%s","pppoe_user":"%s","wifi_ssid":"%s","wifi_band":"%s","proxy_count":%s,"proxy_enabled":"%s"}' \
+printf '  {"wan_id":%s,"wan_type":"%s","interface":"%s","pppoe_user":"%s","wifi_ssid":"%s","wifi_band":"%s","ip_mode":"%s","ipv6_per_session":%s,"proxy_count":%s,"proxy_enabled":"%s"}' \
     "$WAN_ID" \
     "$WAN_TYPE" \
     "$PARENT_IF" \
     "${PPPOE_USER:-}" \
     "${WIFI_SSID:-}" \
     "${WIFI_BAND:-}" \
+    "${IP_MODE:-ipv4}" \
+    "${IPV6_PER_SESSION:-1}" \
     "$COUNT" \
     "$ANY_PROXY_ENABLED"
 
@@ -1306,10 +1679,12 @@ printf '  {"wan_id":%s,"wan_type":"%s","interface":"%s","pppoe_user":"%s","wifi_
     ;;
 
     wan-save)
+
     WAN_ID="$ID"
     NEW_IF="$ARG3"
     NEW_USER="$ARG4"
     NEW_PASS="$ARG5"
+    NEW_IP_MODE="${ARG6:-}"
 
     if [ -z "$WAN_ID" ] || [ -z "$NEW_IF" ] || [ -z "$NEW_USER" ]; then
         echo "Usage: boxproxy wan-save <wan_id> <interface> <user> [password]"
@@ -1328,10 +1703,35 @@ printf '  {"wan_id":%s,"wan_type":"%s","interface":"%s","pppoe_user":"%s","wifi_
     unset OLD_PASS
     unset WAN_TYPE
     unset WAN_PROXY_ENABLED
+    unset IP_MODE
+    unset IPV6_PER_SESSION
 
     . "$WAN_CONF"
 
     WAN_TYPE="${WAN_TYPE:-pppoe}"
+    OLD_IP_MODE="${IP_MODE:-ipv4}"
+    OLD_IPV6_PER_SESSION="${IPV6_PER_SESSION:-1}"
+
+if [ -z "$NEW_IP_MODE" ]; then
+    NEW_IP_MODE="$OLD_IP_MODE"
+fi
+
+case "$NEW_IP_MODE" in
+    ipv4|dual|ipv6)
+        ;;
+    *)
+        echo "Invalid IP mode: $NEW_IP_MODE"
+        exit 1
+        ;;
+esac
+
+# IPv6 per Session chỉ dùng cho IPv6 Only.
+# IPv4 và Dual luôn cố định count = 1.
+if [ "$NEW_IP_MODE" = "ipv6" ]; then
+    NEW_IPV6_PER_SESSION="$OLD_IPV6_PER_SESSION"
+else
+    NEW_IPV6_PER_SESSION="1"
+fi
 
     if [ "$WAN_TYPE" != "pppoe" ]; then
         echo "wan-save currently supports PPPoE WAN only"
@@ -1379,7 +1779,7 @@ printf '  {"wan_id":%s,"wan_type":"%s","interface":"%s","pppoe_user":"%s","wifi_
 
     NEW_MAC=$(cat "/sys/class/net/${NEW_IF}/address" 2>/dev/null || echo "")
 
-    cat > "$WAN_CONF" <<EOF
+cat > "$WAN_CONF" <<EOF
 WAN_ID="$WAN_ID"
 WAN_TYPE="pppoe"
 PARENT_IF="$NEW_IF"
@@ -1387,6 +1787,9 @@ PARENT_MAC="$NEW_MAC"
 
 PPPOE_USER="$NEW_USER"
 PPPOE_PASSWORD="$NEW_PASS"
+
+IP_MODE="$NEW_IP_MODE"
+IPV6_PER_SESSION="$NEW_IPV6_PER_SESSION"
 
 WAN_PROXY_ENABLED="$OLD_PROXY_STATE"
 EOF
@@ -1408,14 +1811,104 @@ EOF
         NN=$(printf '%02d' "$INSTANCE_ID")
         PEER="/etc/ppp/peers/pppoe${NN}"
 
+# Đồng bộ IP mode vào instance config.
+# Luôn đảm bảo chỉ có đúng một dòng IP_MODE.
+sed -i '/^IP_MODE=/d' "$CONF"
+sed -i "/^WAN_TYPE=/a IP_MODE=\"$NEW_IP_MODE\"" "$CONF"
+
         if [ -f "$PEER" ]; then
-            sed -i "s/^user .*/user \"$NEW_USER\"/" "$PEER"
-        fi
+    sed -i "s/^user .*/user \"$NEW_USER\"/" "$PEER"
+
+    # Xóa các option IP mode cũ trước khi thêm mode mới.
+    sed -i \
+        -e '/^noipdefault$/d' \
+        -e '/^noip$/d' \
+        -e '/^+ipv6$/d' \
+        "$PEER"
+
+    case "$NEW_IP_MODE" in
+        ipv4)
+            sed -i '/^defaultroute$/i noipdefault' "$PEER"
+            ;;
+
+        dual)
+            sed -i '/^defaultroute$/i noipdefault\n+ipv6' "$PEER"
+            ;;
+
+        ipv6)
+            sed -i '/^defaultroute$/i noip\n+ipv6' "$PEER"
+            ;;
+    esac
+fi
+
     done
+
+# IPv4 và Dual không được có extra IPv6 slots.
+# Dual chỉ dùng IPv6 chính của PPPoE instance.
+if [ "$NEW_IP_MODE" != "ipv6" ]; then
+    for CONF in /etc/boxproxy/instances/*.conf; do
+        [ -f "$CONF" ] || continue
+
+        INSTANCE_WAN=$(grep '^WAN_ID=' "$CONF" \
+            | cut -d= -f2 | tr -d '"')
+
+        [ "$INSTANCE_WAN" = "$WAN_ID" ] || continue
+
+        INSTANCE_ID=$(basename "$CONF" .conf)
+        SLOT_DIR="/etc/boxproxy/ipv6-slots/${INSTANCE_ID}"
+
+        [ -d "$SLOT_DIR" ] || continue
+
+        for SLOT_CONF in "$SLOT_DIR"/*.conf; do
+            [ -f "$SLOT_CONF" ] || continue
+
+            SLOT_ID=$(basename "$SLOT_CONF" .conf)
+            RULE_PREF=$((10000 + INSTANCE_ID * 100 + SLOT_ID))
+
+	    # Xóa IPv6 address của slot trước khi xóa slot config.
+if SLOT_INFO=$(
+    /usr/local/lib/boxproxy/ipv6-slot-egress \
+        "$INSTANCE_ID" \
+        "$SLOT_ID" 2>/dev/null
+); then
+    unset SLOT_IPV6 EGRESS_IF
+    eval "$SLOT_INFO"
+
+    if [ -n "${SLOT_IPV6:-}" ] && [ -n "${EGRESS_IF:-}" ]; then
+        ip -6 addr del \
+            "${SLOT_IPV6}/64" \
+            dev "$EGRESS_IF" \
+            >/dev/null 2>&1 || true
+    fi
+fi
+
+            systemctl stop \
+                "boxproxy-ipv6-dante@${INSTANCE_ID}-${SLOT_ID}.service" \
+                >/dev/null 2>&1 || true
+
+            systemctl stop \
+                "boxproxy-ipv6-squid@${INSTANCE_ID}-${SLOT_ID}.service" \
+                >/dev/null 2>&1 || true
+
+            ip -6 rule del pref "$RULE_PREF" \
+                >/dev/null 2>&1 || true
+
+            rm -f \
+                "/etc/boxproxy/dante/${INSTANCE_ID}-v6-${SLOT_ID}.conf" \
+                "/etc/boxproxy/squid/${INSTANCE_ID}-v6-${SLOT_ID}.conf" \
+                "$SLOT_CONF"
+
+            echo "Deleted IPv6 slot ${INSTANCE_ID}-${SLOT_ID}"
+        done
+
+        rmdir "$SLOT_DIR" 2>/dev/null || true
+    done
+fi
 
     echo "WAN $WAN_ID saved"
     echo "Interface : $NEW_IF"
     echo "MAC       : $NEW_MAC"
+    echo "IP Mode   : $NEW_IP_MODE"
 
     if [ "$OLD_IF" != "$NEW_IF" ]; then
         echo "Interface changed from $OLD_IF to $NEW_IF"
@@ -1505,7 +1998,8 @@ EOF
        [ "$OLD_PASS" != "$NEW_PASS" ] || \
        [ "$OLD_BAND" != "$NEW_BAND" ]; then
         echo "WiFi configuration changed"
-        echo "Restart WAN to apply the new configuration"
+        echo "Applying new WiFi configuration..."
+        /usr/local/lib/boxproxy/wifi-wan-up "$WAN_ID"
     fi
 	;;
 

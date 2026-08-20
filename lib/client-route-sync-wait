@@ -1,0 +1,42 @@
+#!/bin/bash
+
+CONF_DIR="/etc/boxproxy/client-routes"
+
+for TRY in $(seq 1 120); do
+    READY=1
+
+    IDS=$(
+        grep -h '^INSTANCE_ID=' "$CONF_DIR"/*.conf 2>/dev/null |
+        cut -d= -f2 | tr -d '"' | sort -nu
+    )
+
+    for ID in $IDS; do
+        CONF="/etc/boxproxy/instances/${ID}.conf"
+        [ -f "$CONF" ] || { READY=0; break; }
+
+        unset PPP_IF IP_MODE WAN_TYPE
+        . "$CONF"
+
+        [ -n "${PPP_IF:-}" ] || { READY=0; break; }
+        [ -d "/sys/class/net/${PPP_IF}" ] || { READY=0; break; }
+
+        case "${IP_MODE:-ipv4}" in
+            dual|ipv6)
+                ip -6 addr show dev "$PPP_IF" scope global |
+                    grep -q 'inet6 ' || { READY=0; break; }
+
+                /usr/local/lib/boxproxy/ipv6-pd-prefix "$ID" \
+                    >/dev/null 2>&1 || { READY=0; break; }
+                ;;
+        esac
+    done
+
+    if [ "$READY" -eq 1 ]; then
+        exec /usr/local/lib/boxproxy/client-route-sync
+    fi
+
+    sleep 1
+done
+
+echo "Client routing dependencies not ready after 120 seconds"
+exit 1

@@ -9,7 +9,7 @@ INSTANCE_CONF="/etc/boxproxy/instances/${ID}.conf"
     exit 1
 }
 
-unset WAN_ID PPP_IF EGRESS_IF
+unset WAN_ID WAN_TYPE IP_MODE PPP_IF EGRESS_IF
 . "$INSTANCE_CONF"
 
 WAN_CONF="/etc/boxproxy/wans/${WAN_ID}.conf"
@@ -23,14 +23,27 @@ unset WAN_TYPE PARENT_IF
 . "$WAN_CONF"
 
 WAN_TYPE="${WAN_TYPE:-pppoe}"
+IP_MODE="${IP_MODE:-ipv4}"
+
+case "$IP_MODE" in
+    ipv4|dual|ipv6)
+        ;;
+    *)
+        echo "Invalid IP mode: $IP_MODE" >&2
+        exit 1
+        ;;
+esac
 
 case "$WAN_TYPE" in
     pppoe)
         EGRESS_IF="${PPP_IF:-}"
         ;;
-dhcp|wifi)
+
+    dhcp|wifi)
         EGRESS_IF="${PARENT_IF:-}"
+        IP_MODE="ipv4"
         ;;
+
     *)
         echo "Unsupported WAN type: $WAN_TYPE" >&2
         exit 1
@@ -42,16 +55,81 @@ esac
     exit 1
 }
 
-EGRESS_IP=$(ip -4 -o addr show dev "$EGRESS_IF" 2>/dev/null \
-    | awk '{print $4}' \
-    | cut -d/ -f1 \
-    | head -n1)
+EGRESS_IP=$(
+    ip -4 -o addr show dev "$EGRESS_IF" 2>/dev/null \
+        | awk '{print $4}' \
+        | cut -d/ -f1 \
+        | head -n1
+)
 
-[ -n "$EGRESS_IP" ] || {
-    echo "No IPv4 found on $EGRESS_IF" >&2
-    exit 1
-}
+# Chọn IPv6 global ổn định, không lấy privacy/temporary address.
+EGRESS_IPV6_CIDR=$(
+    ip -6 -o addr show dev "$EGRESS_IF" scope global 2>/dev/null \
+    | awk '
+        /mngtmpaddr/ && $0 !~ / temporary / {
+            print $4
+            found=1
+            exit
+        }
+
+        $0 !~ / temporary / && fallback == "" {
+            fallback=$4
+        }
+
+        END {
+            if (!found && fallback != "")
+                print fallback
+        }
+    '
+)
+
+EGRESS_IPV6="${EGRESS_IPV6_CIDR%%/*}"
+
+# Kiểm tra theo IP mode.
+case "$IP_MODE" in
+    ipv4)
+        [ -n "$EGRESS_IP" ] || {
+            echo "No IPv4 found on $EGRESS_IF" >&2
+            exit 1
+        }
+        ;;
+
+    dual)
+        [ -n "$EGRESS_IP" ] || {
+            echo "No IPv4 found on $EGRESS_IF" >&2
+            exit 1
+        }
+
+        # IPv6 có thể xuất hiện chậm hơn IPv4.
+        # Không fail helper ở giai đoạn này.
+        ;;
+
+    ipv6)
+        [ -n "$EGRESS_IPV6" ] || {
+            echo "No global IPv6 found on $EGRESS_IF" >&2
+            exit 1
+        }
+        ;;
+esac
+
+# Chỉ expose địa chỉ phù hợp với IP mode.
+case "$IP_MODE" in
+    ipv4)
+        EGRESS_IPV6=""
+        EGRESS_IPV6_CIDR=""
+        ;;
+
+    dual)
+        ;;
+
+    ipv6)
+        EGRESS_IP=""
+        ;;
+esac
 
 printf 'WAN_TYPE=%s\n' "$WAN_TYPE"
+printf 'IP_MODE=%s\n' "$IP_MODE"
 printf 'EGRESS_IF=%s\n' "$EGRESS_IF"
 printf 'EGRESS_IP=%s\n' "$EGRESS_IP"
+printf 'EGRESS_IPV6=%s\n' "$EGRESS_IPV6"
+printf 'EGRESS_IPV6_CIDR=%s\n' "$EGRESS_IPV6_CIDR"

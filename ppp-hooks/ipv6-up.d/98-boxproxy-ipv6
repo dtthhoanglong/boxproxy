@@ -1,0 +1,65 @@
+#!/bin/sh
+
+IFACE="$1"
+
+for CONF in /etc/boxproxy/instances/*.conf; do
+    [ -f "$CONF" ] || continue
+
+    unset PPP_IF PROXY_ENABLED IP_MODE
+    . "$CONF"
+
+    [ "$PPP_IF" = "$IFACE" ] || continue
+
+    ID=$(basename "$CONF" .conf)
+
+    case "${IP_MODE:-ipv4}" in
+        dual|ipv6)
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+
+    # IPv6 address có thể xuất hiện trước RA default route.
+    # Retry routing-up cho tới khi IPv6 gateway thực sự sẵn sàng.
+    ROUTING_OK=0
+
+    for i in $(seq 1 30); do
+        if /usr/local/lib/boxproxy/routing-up "$ID" \
+            >/dev/null 2>&1; then
+
+            ROUTING_OK=1
+            break
+        fi
+
+        sleep 1
+    done
+
+    [ "$ROUTING_OK" -eq 1 ] || exit 1
+
+if [ "${PROXY_ENABLED:-yes}" = "yes" ]; then
+
+    /usr/local/lib/boxproxy/dante-generate "$ID" \
+        >/dev/null 2>&1 || exit 1
+
+    /bin/systemctl restart \
+        "boxproxy-dante@${ID}.service" \
+        >/dev/null 2>&1 || true
+
+    /usr/local/lib/boxproxy/squid-generate "$ID" \
+        >/dev/null 2>&1 || exit 1
+
+    /bin/systemctl restart \
+        "boxproxy-squid@${ID}.service" \
+        >/dev/null 2>&1 || true
+fi
+
+    # Recreate all extra IPv6 slots using the new /64 prefix,
+    # rebuild their source rules and restart slot proxies.
+    /usr/local/lib/boxproxy/ipv6-slots-apply "$ID" \
+        >/dev/null 2>&1 || true
+
+    exit 0
+done
+
+exit 0

@@ -10,16 +10,69 @@ OUT="/etc/boxproxy/squid/${ID}.conf"
 
 eval "$(/usr/local/lib/boxproxy/instance-egress "$ID")"
 
-if [ -z "${EGRESS_IF:-}" ] || [ -z "${EGRESS_IP:-}" ]; then
-    echo "No egress available for instance $ID"
+[ -n "${EGRESS_IF:-}" ] || {
+    echo "No egress interface for instance $ID"
     exit 1
-fi
+}
 
-cat > "$OUT" <<EOF
+case "$IP_MODE" in
+    ipv4)
+        [ -n "${EGRESS_IP:-}" ] || {
+            echo "No IPv4 egress for instance $ID"
+            exit 1
+        }
+        ;;
 
-http_port 10.10.10.1:${HTTP_PORT}
-http_port ${EGRESS_IP}:${HTTP_PORT}
-tcp_outgoing_address ${EGRESS_IP}
+    dual)
+        [ -n "${EGRESS_IP:-}" ] || {
+            echo "No IPv4 egress for instance $ID"
+            exit 1
+        }
+
+        [ -n "${EGRESS_IPV6:-}" ] || {
+            echo "No IPv6 egress for instance $ID"
+            exit 1
+        }
+        ;;
+
+    ipv6)
+        [ -n "${EGRESS_IPV6:-}" ] || {
+            echo "No IPv6 egress for instance $ID"
+            exit 1
+        }
+        ;;
+
+    *)
+        echo "Invalid IP mode: $IP_MODE"
+        exit 1
+        ;;
+esac
+
+{
+    echo "http_port 10.10.10.1:${HTTP_PORT}"
+
+    case "$IP_MODE" in
+        ipv4)
+            echo "http_port ${EGRESS_IP}:${HTTP_PORT}"
+            echo "tcp_outgoing_address ${EGRESS_IP}"
+            ;;
+
+        dual)
+            echo "http_port ${EGRESS_IP}:${HTTP_PORT}"
+            echo "http_port [${EGRESS_IPV6}]:${HTTP_PORT}"
+            echo
+            echo "tcp_outgoing_address ${EGRESS_IP}"
+            echo "tcp_outgoing_address ${EGRESS_IPV6}"
+            ;;
+
+        ipv6)
+            echo "http_port [${EGRESS_IPV6}]:${HTTP_PORT}"
+            echo
+            echo "tcp_outgoing_address ${EGRESS_IPV6}"
+            ;;
+    esac
+
+    cat <<EOF
 
 shutdown_lifetime 1 second
 
@@ -46,5 +99,7 @@ pid_filename /run/boxproxy-squid-${ID}.pid
 access_log /var/log/squid/boxproxy-${ID}-access.log
 cache_log /var/log/squid/boxproxy-${ID}-cache.log
 EOF
+
+} > "$OUT"
 
 chmod 600 "$OUT"

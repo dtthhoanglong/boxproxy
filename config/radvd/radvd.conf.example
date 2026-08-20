@@ -1,0 +1,21 @@
+interface LAN_INTERFACE
+{
+    AdvSendAdvert on;
+    MinRtrAdvInterval 3;
+    MaxRtrAdvInterval 10;
+
+    AdvManagedFlag off;
+    AdvOtherConfigFlag off;
+
+    prefix fd00:10:10:10::/64
+    {
+        AdvOnLink on;
+        AdvAutonomous on;
+        AdvRouterAddr on;
+    };
+
+    RDNSS 2402:800:20ff:109c::1 2402:800:20ff:109c::3
+    {
+        AdvRDNSSLifetime 60;
+    };
+};

@@ -1,11 +1,11 @@
 [Unit]
 Description=BoxProxy LAN Client Routing
-After=network.target boxproxy-wan-restore.service
-Wants=network.target boxproxy-wan-restore.service
+After=network.target boxproxy-wan-restore.service boxproxy-ipv6-pd@1.service radvd.service
+Wants=network.target boxproxy-wan-restore.service boxproxy-ipv6-pd@1.service radvd.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/boxproxy/client-route-sync
+ExecStart=/usr/local/lib/boxproxy/client-route-sync-wait
 RemainAfterExit=yes
 
 [Install]

@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh BoxProxy LAN Client Routing
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/boxproxy/client-route-sync-wait

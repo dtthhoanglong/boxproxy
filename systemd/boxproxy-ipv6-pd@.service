@@ -1,0 +1,13 @@
+[Unit]
+Description=BoxProxy DHCPv6 Prefix Delegation instance %i
+After=boxproxy-pppoe@%i.service
+BindsTo=boxproxy-pppoe@%i.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/boxproxy/ipv6-pd-run %i
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

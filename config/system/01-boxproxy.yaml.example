@@ -9,5 +9,7 @@ network:
     LAN_INTERFACE:
       dhcp4: false
       dhcp6: false
+      accept-ra: false
       addresses:
         - 10.10.10.1/24
+        - fd00:10:10:10::1/64

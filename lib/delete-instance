@@ -25,6 +25,8 @@ NN=$(printf '%02d' "$ID")
 # Disable khỏi boot nếu đã enable
 systemctl disable "boxproxy-macvlan@${ID}.service" >/dev/null 2>&1 || true
 systemctl disable "boxproxy-pppoe@${ID}.service" >/dev/null 2>&1 || true
+systemctl stop "boxproxy-ipv6-pd@${ID}.service" >/dev/null 2>&1 || true
+systemctl disable "boxproxy-ipv6-pd@${ID}.service" >/dev/null 2>&1 || true
 systemctl disable "boxproxy-dante@${ID}.service" >/dev/null 2>&1 || true
 systemctl disable "boxproxy-squid@${ID}.service" >/dev/null 2>&1 || true
 
@@ -37,6 +39,13 @@ rm -f "/etc/boxproxy/squid/${ID}.conf"
 
 # Xóa PPP peer
 rm -f "/etc/ppp/peers/pppoe${NN}"
+
+# Xóa state DHCPv6-PD riêng khi instance bị delete.
+rm -f "/etc/boxproxy/dhcpcd-pd-${ID}.conf"
+rm -f "/etc/boxproxy/ipv6-pd-uuid/${ID}.uuid"
+if [ -n "${PPP_IF:-}" ]; then
+    rm -f "/var/lib/dhcpcd/${PPP_IF}.lease6" 2>/dev/null || true
+fi
 
 # Xóa account proxy
 htpasswd -D /etc/squid/passwd "$PROXY_USER" >/dev/null 2>&1 || true

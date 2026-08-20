@@ -30,6 +30,7 @@ fi
 
 # BoxProxy V1 WAN configs do not contain WAN_TYPE.
 WAN_TYPE="${WAN_TYPE:-pppoe}"
+IP_MODE="${IP_MODE:-ipv4}"
 
 SETTINGS="/etc/boxproxy/settings.conf"
 CONF="/etc/boxproxy/instances/${ID}.conf"
@@ -77,6 +78,7 @@ case "$WAN_TYPE" in
         cat > "$CONF" <<EOF
 WAN_ID="$WAN_ID"
 WAN_TYPE="pppoe"
+IP_MODE="$IP_MODE"
 
 MACVLAN_IF="$MACVLAN_IF"
 MAC="$NEW_MAC"
@@ -93,8 +95,16 @@ PROXY_ENABLED="${WAN_PROXY_ENABLED:-yes}"
 EOF
 
         chmod 600 "$CONF"
+        # Tạo PPPoE peer theo IP mode của WAN.
+        case "$IP_MODE" in
+            ipv4|dual|ipv6)
+                ;;
+            *)
+                echo "Invalid IP mode in WAN $WAN_ID: $IP_MODE"
+                exit 1
+                ;;
+        esac
 
-        # Tạo PPPoE peer theo WAN tương ứng
         cat > "$PEER" <<EOF
 plugin rp-pppoe.so
 mvppp${NN}
@@ -108,8 +118,34 @@ holdoff 5
 
 mtu 1492
 mru 1492
+EOF
+
+        case "$IP_MODE" in
+            ipv4)
+                cat >> "$PEER" <<EOF
 
 noipdefault
+EOF
+                ;;
+
+            dual)
+                cat >> "$PEER" <<EOF
+
+noipdefault
++ipv6
+EOF
+                ;;
+
+            ipv6)
+                cat >> "$PEER" <<EOF
+
+noip
++ipv6
+EOF
+                ;;
+        esac
+
+        cat >> "$PEER" <<EOF
 defaultroute
 replacedefaultroute
 usepeerdns

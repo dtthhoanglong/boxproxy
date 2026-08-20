@@ -1,0 +1,11 @@
+case "$reason" in
+    BOUND6|RENEW6|REBIND6|REBOOT6)
+        case "$interface" in
+            ppp*)
+                systemctl --no-block restart \
+                    boxproxy-client-routing-refresh.service \
+                    >/dev/null 2>&1 || true
+                ;;
+        esac
+        ;;
+esac

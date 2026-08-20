@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================
-# BoxProxy V2 Installer
+# BoxProxy V3 Installer
 # Target: Ubuntu Server 22.04 LTS
 # ============================================================
 
@@ -22,10 +22,10 @@ fi
 
 echo
 echo "============================================================"
-echo "                 BoxProxy V2 Installer"
+echo "                 BoxProxy V3 Installer"
 echo "============================================================"
 echo
-echo "BoxProxy V2 uses:"
+echo "BoxProxy V3 uses:"
 echo
 echo "  LAN Gateway       : 10.10.10.1/24"
 echo "  Dynamic DHCP      : 10.10.10.2 - 10.10.10.100"
@@ -105,7 +105,10 @@ apt-get install -y \
     iptables \
     openssl \
     curl \
-    networkd-dispatcher
+    networkd-dispatcher \
+    dhcpcd5 \
+    radvd \
+    util-linux
 
 echo
 echo "============================================================"
@@ -120,6 +123,8 @@ install -d -m 700 /etc/boxproxy/dns
 install -d -m 700 /etc/boxproxy/squid
 install -d -m 700 /etc/boxproxy/client-routes
 install -d -m 700 /etc/boxproxy/ddns
+install -d -m 700 /etc/boxproxy/ipv6-pd-uuid
+install -d -m 700 /etc/boxproxy/ipv6-slots
 
 install -d -m 755 /usr/local/lib/boxproxy
 install -d -m 755 /opt/boxproxy-web
@@ -220,6 +225,24 @@ for FILE in "$REPO_DIR"/ppp-hooks/ip-down.d/*; do
     install -m 755 "$FILE" \
         "/etc/ppp/ip-down.d/$(basename "$FILE")"
 done
+
+if [ -d "$REPO_DIR/ppp-hooks/ipv6-up.d" ]; then
+    install -d -m 755 /etc/ppp/ipv6-up.d
+    for FILE in "$REPO_DIR"/ppp-hooks/ipv6-up.d/*; do
+        [ -f "$FILE" ] || continue
+        install -m 755 "$FILE" \
+            "/etc/ppp/ipv6-up.d/$(basename "$FILE")"
+    done
+fi
+
+if [ -d "$REPO_DIR/dhcpcd-hooks" ]; then
+    install -d -m 755 /lib/dhcpcd/dhcpcd-hooks
+    for FILE in "$REPO_DIR"/dhcpcd-hooks/*; do
+        [ -f "$FILE" ] || continue
+        install -m 644 "$FILE" \
+            "/lib/dhcpcd/dhcpcd-hooks/$(basename "$FILE")"
+    done
+fi
 
 # Install networkd-dispatcher hooks used by DHCP/WiFi WAN.
 if [ -d "$REPO_DIR/networkd-dispatcher/routable.d" ]; then
@@ -353,16 +376,37 @@ install -m 644 \
     "$REPO_DIR/config/system/99-boxproxy-forward.conf" \
     /etc/sysctl.d/99-boxproxy-forward.conf
 
+rm -f /etc/sysctl.d/99-boxproxy-disable-ipv6.conf
+
 install -m 644 \
-    "$REPO_DIR/config/system/99-boxproxy-disable-ipv6.conf" \
-    /etc/sysctl.d/99-boxproxy-disable-ipv6.conf
+    "$REPO_DIR/config/system/99-boxproxy-ipv6.conf" \
+    /etc/sysctl.d/99-boxproxy-ipv6.conf
+
+install -m 644 \
+    "$REPO_DIR/config/system/99-boxproxy-ipv6-no-temp.conf" \
+    /etc/sysctl.d/99-boxproxy-ipv6-no-temp.conf
+
+cp "$REPO_DIR/config/system/90-boxproxy-ipv6-router.conf.example" \
+    /etc/sysctl.d/90-boxproxy-ipv6-router.conf
+
+sed -i "s/LAN_INTERFACE/$LAN_IF/g" \
+    /etc/sysctl.d/90-boxproxy-ipv6-router.conf
 
 sysctl --system >/dev/null
 
 echo
 echo "============================================================"
+echo "13. Configuring IPv6 Router Advertisement"
+echo "============================================================"
 
-echo "13. Installing systemd services"
+cp "$REPO_DIR/config/radvd/radvd.conf.example" /etc/radvd.conf
+sed -i "s/LAN_INTERFACE/$LAN_IF/g" /etc/radvd.conf
+chmod 644 /etc/radvd.conf
+radvd --configtest -C /etc/radvd.conf
+
+echo
+echo "============================================================"
+echo "14. Installing systemd services"
 echo "============================================================"
 
 for UNIT in \
@@ -395,6 +439,8 @@ systemctl enable boxproxy-client-routing.service
 systemctl enable boxproxy-wan-restore.service
 systemctl enable boxproxy-ddns.timer
 systemctl enable isc-dhcp-server.service
+systemctl unmask radvd.service >/dev/null 2>&1 || true
+systemctl enable radvd.service
 
 systemctl enable networkd-dispatcher.service >/dev/null 2>&1 || true
 
@@ -408,8 +454,8 @@ systemctl mask danted.service >/dev/null 2>&1 || true
 systemctl disable squid.service >/dev/null 2>&1 || true
 systemctl mask squid.service >/dev/null 2>&1 || true
 
-# BoxProxy V2 currently uses IPv4 only.
-# Keep DHCPv4, disable DHCPv6 service.
+# LAN IPv6 uses SLAAC/radvd, not isc-dhcp-server6.
+# Keep DHCPv4 and disable the separate DHCPv6 server service.
 systemctl disable isc-dhcp-server6.service >/dev/null 2>&1 || true
 systemctl mask isc-dhcp-server6.service >/dev/null 2>&1 || true
 
@@ -419,14 +465,14 @@ systemctl mask isc-dhcp-server6.service >/dev/null 2>&1 || true
 
 echo
 echo "============================================================"
-echo "14. Disabling unnecessary network wait"
+echo "15. Disabling unnecessary network wait"
 echo "============================================================"
 
 systemctl mask systemd-networkd-wait-online.service >/dev/null 2>&1 || true
 
 echo
 echo "============================================================"
-echo "15. Final validation"
+echo "16. Final validation"
 echo "============================================================"
 
 bash -n /usr/local/sbin/boxproxy
@@ -442,14 +488,15 @@ dhcpd -t -cf /etc/dhcp/dhcpd.conf
 
 echo
 echo "============================================================"
-echo "               BoxProxy V2 installation complete"
+echo "               BoxProxy V3 installation complete"
 echo "============================================================"
 echo
 echo "WAN interface : $WAN_IF"
 echo "LAN interface : $LAN_IF"
 echo
 echo "LAN Gateway:"
-echo "  10.10.10.1"
+echo "  IPv4: 10.10.10.1"
+echo "  IPv6: fd00:10:10:10::1/64"
 echo
 echo "Web UI after reboot:"
 echo "  http://10.10.10.1:8080/"

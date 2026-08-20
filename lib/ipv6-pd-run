@@ -1,0 +1,100 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+
+[ -n "$ID" ] || {
+    echo "Usage: ipv6-pd-run <instance_id>"
+    exit 1
+}
+
+INSTANCE_CONF="/etc/boxproxy/instances/${ID}.conf"
+[ -f "$INSTANCE_CONF" ] || exit 1
+
+unset PPP_IF WAN_ID IP_MODE WAN_TYPE
+. "$INSTANCE_CONF"
+
+case "${IP_MODE:-ipv4}" in
+    dual|ipv6) ;;
+    *) exit 0 ;;
+esac
+
+[ "${WAN_TYPE:-pppoe}" = "pppoe" ] || exit 0
+[ -n "${PPP_IF:-}" ] || exit 1
+
+PD_DIR="/etc/boxproxy/ipv6-pd-uuid"
+UUID_FILE="${PD_DIR}/${ID}.uuid"
+DHCPCD_CONF="/etc/boxproxy/dhcpcd-pd-${ID}.conf"
+
+mkdir -p "$PD_DIR"
+chmod 700 "$PD_DIR"
+
+if [ ! -f "$UUID_FILE" ]; then
+    REAL_UUID=$(cat /sys/class/dmi/id/product_uuid)
+
+    python3 - "$ID" "$REAL_UUID" > "$UUID_FILE" <<'PY'
+import sys
+
+instance_id = int(sys.argv[1])
+real_uuid = sys.argv[2].strip()
+
+# Giữ nguyên UUID hệ thống cho instance 1.
+if instance_id == 1:
+    print(real_uuid)
+else:
+    # Pattern đã test thành công với Viettel:
+    # instance 1 -> 03...
+    # instance 2 -> 13...
+    # instance 3 -> 23...
+    first = (instance_id - 1) * 0x10 + 0x03
+
+    parts = real_uuid.split("-")
+    first_part = parts[0]
+
+    # Thay byte đầu của UUID, giữ nguyên 3 byte sau.
+    new_first_part = f"{first:02x}" + first_part[2:]
+
+    parts[0] = new_first_part
+    print("-".join(parts))
+PY
+
+    chmod 600 "$UUID_FILE"
+fi
+
+cat > "$DHCPCD_CONF" <<EOF2
+noipv4
+noipv6rs
+
+allowinterfaces ${PPP_IF}
+
+interface ${PPP_IF}
+ipv6only
+
+ia_pd ${ID}
+EOF2
+
+chmod 600 "$DHCPCD_CONF"
+
+for i in $(seq 1 60); do
+    [ -d "/sys/class/net/${PPP_IF}" ] && break
+    sleep 1
+done
+
+[ -d "/sys/class/net/${PPP_IF}" ] || {
+    echo "PPP interface not found: ${PPP_IF}"
+    exit 1
+}
+
+exec unshare --mount /bin/bash -c "
+set -e
+
+mount --bind \
+    '${UUID_FILE}' \
+    /sys/class/dmi/id/product_uuid
+
+exec /sbin/dhcpcd \
+    -6 \
+    -B \
+    -f '${DHCPCD_CONF}' \
+    '${PPP_IF}'
+"

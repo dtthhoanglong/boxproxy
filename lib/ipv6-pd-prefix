@@ -1,0 +1,21 @@
+#!/bin/bash
+set -e
+
+ID="$1"
+CONF="/etc/boxproxy/instances/${ID}.conf"
+
+[ -f "$CONF" ] || exit 1
+
+unset PPP_IF
+. "$CONF"
+
+DUMP=$(/sbin/dhcpcd -U "$PPP_IF" 2>/dev/null || true)
+
+PREFIX=$(echo "$DUMP" | sed -n \
+"s/^dhcp6_ia_pd1_prefix1='\(.*\)'/\1/p" | head -1)
+
+PLEN=$(echo "$DUMP" | sed -n \
+"s/^dhcp6_ia_pd1_prefix1_length='\(.*\)'/\1/p" | head -1)
+
+[ -n "$PREFIX" ] || exit 1
+echo "${PREFIX}/${PLEN:-64}"

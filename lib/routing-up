@@ -14,76 +14,152 @@ flock -x 9
 eval "$(/usr/local/lib/boxproxy/instance-egress "$ID")"
 
 TABLE=$((100 + ID))
+RULE_PREF=$((1000 + ID))
 
 [ -n "${EGRESS_IF:-}" ] || {
     echo "No egress interface for instance $ID"
     exit 1
 }
 
-[ -n "${EGRESS_IP:-}" ] || {
-    echo "No IPv4 for instance $ID"
-    exit 1
-}
+# =========================================================
+# IPv4
+# =========================================================
 
+# Luôn dọn rule/table IPv4 cũ trước.
+ip rule del pref "$RULE_PREF" 2>/dev/null || true
 ip route flush table "$TABLE" 2>/dev/null || true
 
-# Fail-close fallback. Nếu đường WAN biến mất,
-# traffic của instance này không được rơi sang main table.
-ip route add unreachable default metric 42760 table "$TABLE"
+# Fail-close IPv4.
+ip route add unreachable default \
+    metric 42760 \
+    table "$TABLE"
 
-case "$WAN_TYPE" in
-    pppoe)
-        ip route add default \
-            dev "$EGRESS_IF" \
-            metric 10 \
-            table "$TABLE"
-        ;;
+if [ "$IP_MODE" = "ipv4" ] || [ "$IP_MODE" = "dual" ]; then
 
-dhcp|wifi)
-
-        EGRESS_NET=$(ip -4 route show dev "$EGRESS_IF" \
-            proto kernel scope link \
-            | awk '$1 != "default" {print $1; exit}')
-
-        GATEWAY=$(ip -4 route show default dev "$EGRESS_IF" \
-            | awk '/^default / {print $3; exit}')
-
-        [ -n "$EGRESS_NET" ] || {
-            echo "No IPv4 subnet found on $EGRESS_IF"
-            exit 1
-        }
-
-        [ -n "$GATEWAY" ] || {
-            echo "No DHCP gateway found on $EGRESS_IF"
-            exit 1
-        }
-
-        ip route add "$EGRESS_NET" \
-            dev "$EGRESS_IF" \
-            src "$EGRESS_IP" \
-            table "$TABLE"
-
-        ip route add default \
-            via "$GATEWAY" \
-            dev "$EGRESS_IF" \
-            metric 10 \
-            table "$TABLE"
-        ;;
-
-    *)
-        echo "Unsupported WAN type: $WAN_TYPE"
+    [ -n "${EGRESS_IP:-}" ] || {
+        echo "No IPv4 for instance $ID"
         exit 1
-        ;;
-esac
+    }
 
-# Traffic có source IP của egress này luôn dùng đúng routing table.
-ip rule del pref "$((1000 + ID))" 2>/dev/null || true
-ip rule add from "$EGRESS_IP"/32 \
-    table "$TABLE" \
-    priority "$((1000 + ID))"
+    case "$WAN_TYPE" in
+        pppoe)
+            ip route add default \
+                dev "$EGRESS_IF" \
+                src "$EGRESS_IP" \
+                metric 10 \
+                table "$TABLE"
+            ;;
+
+        dhcp|wifi)
+            EGRESS_NET=$(
+                ip -4 route show dev "$EGRESS_IF" \
+                    proto kernel scope link \
+                    | awk '$1 != "default" {print $1; exit}'
+            )
+
+            GATEWAY=$(
+                ip -4 route show default dev "$EGRESS_IF" \
+                    | awk '/^default / {print $3; exit}'
+            )
+
+            [ -n "$EGRESS_NET" ] || {
+                echo "No IPv4 subnet found on $EGRESS_IF"
+                exit 1
+            }
+
+            [ -n "$GATEWAY" ] || {
+                echo "No DHCP gateway found on $EGRESS_IF"
+                exit 1
+            }
+
+            ip route add "$EGRESS_NET" \
+                dev "$EGRESS_IF" \
+                src "$EGRESS_IP" \
+                table "$TABLE"
+
+            ip route add default \
+                via "$GATEWAY" \
+                dev "$EGRESS_IF" \
+                src "$EGRESS_IP" \
+                metric 10 \
+                table "$TABLE"
+            ;;
+
+        *)
+            echo "Unsupported WAN type: $WAN_TYPE"
+            exit 1
+            ;;
+    esac
+
+    ip rule add from "$EGRESS_IP"/32 \
+        table "$TABLE" \
+        priority "$RULE_PREF"
+fi
+
+
+# =========================================================
+# IPv6
+# =========================================================
+
+# IPv4 và IPv6 dùng namespace route/rule riêng,
+# nên có thể dùng cùng table number và priority.
+
+ip -6 rule del pref "$RULE_PREF" 2>/dev/null || true
+ip -6 route flush table "$TABLE" 2>/dev/null || true
+
+# Fail-close IPv6.
+ip -6 route add unreachable default \
+    metric 42760 \
+    table "$TABLE"
+
+if [ "$IP_MODE" = "dual" ] || [ "$IP_MODE" = "ipv6" ]; then
+
+    if [ -n "${EGRESS_IPV6:-}" ]; then
+
+        case "$WAN_TYPE" in
+            pppoe)
+                IPV6_GATEWAY=$(
+                    ip -6 route show default dev "$EGRESS_IF" \
+                        | awk '/^default / && $2 == "via" {print $3; exit}'
+                )
+
+                [ -n "$IPV6_GATEWAY" ] || {
+                    echo "No IPv6 gateway found on $EGRESS_IF"
+                    exit 1
+                }
+
+                ip -6 route add default \
+                    via "$IPV6_GATEWAY" \
+                    dev "$EGRESS_IF" \
+                    src "$EGRESS_IPV6" \
+                    metric 10 \
+                    table "$TABLE"
+                ;;
+
+            *)
+                echo "IPv6 routing currently supports PPPoE only"
+                exit 1
+                ;;
+        esac
+
+        ip -6 rule add from "$EGRESS_IPV6"/128 \
+            table "$TABLE" \
+            priority "$RULE_PREF"
+
+    elif [ "$IP_MODE" = "ipv6" ]; then
+        echo "No IPv6 for instance $ID"
+        exit 1
+    else
+        # Dual-stack: IPv4 có thể lên trước IPv6.
+        echo "IPv6 not ready yet for instance $ID"
+    fi
+fi
+
 
 echo "Routing enabled for instance $ID"
 echo "WAN type : $WAN_TYPE"
+echo "IP Mode  : $IP_MODE"
 echo "Egress   : $EGRESS_IF"
-echo "IPv4     : $EGRESS_IP"
+echo "IPv4     : ${EGRESS_IP:-}"
+echo "IPv6     : ${EGRESS_IPV6:-}"
 echo "Table    : $TABLE"
