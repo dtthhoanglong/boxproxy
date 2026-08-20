@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BoxProxy - Dynamic DNS</title>
+<style>
+body { font-family: Arial, sans-serif; background:#f4f4f4; margin:18px; }
+h1 { margin:0 0 14px 0; }
+h2 { margin:14px 0 8px 0; }
+.nav { margin-bottom:16px; }
+.nav a { display:inline-block; padding:8px 12px; margin-right:8px; border:1px solid #aaa; background:white; text-decoration:none; color:black; border-radius:4px; }
+.ddns-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; align-items:start; }
+.card { background:white; padding:12px 14px; border-radius:8px; box-shadow:0 1px 5px rgba(0,0,0,.15); }
+.session-title { font-size:18px; font-weight:bold; margin-bottom:10px; }
+.ddns-config > div { display:grid; grid-template-columns:150px minmax(0,1fr); gap:8px; align-items:center; margin-bottom:8px; }
+.ddns-config input[type="text"], .ddns-config input[type="password"], .ddns-config input[type="number"], .ddns-config select { width:100%; box-sizing:border-box; padding:6px; }
+.ddns-buttons { display:flex !important; gap:8px !important; margin-top:10px; }
+.ddns-buttons button { padding:7px 12px; }
+.wan-meta { margin-bottom:12px; line-height:1.4; }
+@media (max-width:1200px) { .ddns-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:700px) { .ddns-grid { grid-template-columns:1fr; } .ddns-config > div { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<h1>BoxProxy</h1>
+<div class="nav">
+    <a href="/">Proxy Management</a>
+    <a href="/routing">LAN Routing</a>
+    <a href="/ddns">Dynamic DNS</a>
+</div>
+<h2>Dynamic DNS</h2>
+<div class="ddns-grid">
+{% for w in wans %}
+<div class="card">
+    <div class="session-title">WAN {{ w.wan_id }} — {{ w.interface }}</div>
+    <div class="wan-meta"><strong>WAN Type:</strong> {{ w.wan_type|upper }}</div>
+    <form method="post" action="/ddns-save/{{ w.wan_id }}" class="ddns-config">
+        <div><strong>Enable DDNS:</strong><input type="checkbox" name="enabled" value="yes" {% if w.ddns.enabled == "yes" %}checked{% endif %}></div>
+        <div><strong>Provider:</strong><select name="provider"><option value="noip" {% if w.ddns.provider == "noip" %}selected{% endif %}>No-IP</option></select></div>
+        <div><strong>Hostname:</strong><input type="text" name="hostname" value="{{ w.ddns.hostname }}" placeholder="example.ddns.net" required></div>
+        <div><strong>Username:</strong><input type="text" name="username" value="{{ w.ddns.username }}" required></div>
+        <div><strong>Password:</strong><input type="password" name="password" placeholder="{% if w.ddns.has_password %}Leave blank to keep current{% else %}Enter DDNS password{% endif %}"></div>
+        <div><strong>Check Interval:</strong><div><input type="number" name="interval_sec" min="30" value="{{ w.ddns.interval_sec }}" required> <span>seconds</span></div></div>
+        <div class="ddns-buttons"><button type="submit">Save DDNS</button></div>
+    </form>
+    {% if w.ddns.enabled == "yes" %}
+    <form method="post" action="/ddns-disable/{{ w.wan_id }}" style="margin-top:8px;"><button type="submit">Disable DDNS</button></form>
+    {% endif %}
+</div>
+{% endfor %}
+</div>
+</body>
+</html>

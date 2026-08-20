@@ -239,6 +239,7 @@ input {
 <div class="nav">
     <a href="/">Proxy Management</a>
     <a href="/routing">LAN Routing</a>
+    <a href="/ddns">Dynamic DNS</a>
 </div>
 
 <h2>WAN Configuration</h2>
@@ -309,6 +310,20 @@ input {
             id="addWanPppoePasswordInput"
             required>
     </div>
+    <div id="addWanIpModeRow">
+        <strong>IP Mode:</strong>
+        <select name="ip_mode" id="addWanIpMode" onchange="updateAddWanIpMode()">
+            <option value="ipv4" selected>IPv4 Only</option>
+            <option value="dual">IPv4 + IPv6</option>
+            <option value="ipv6">IPv6 Only</option>
+        </select>
+    </div>
+
+    <div id="addWanIpv6CountRow" style="display:none;">
+        <strong>IPv6 per Session:</strong>
+        <input type="number" name="ipv6_per_session" id="addWanIpv6Count" min="1" max="99" value="1">
+    </div>
+
 
     <div id="addWanWifiSsid" style="display:none;">
     <strong>WiFi SSID:</strong>
@@ -429,6 +444,21 @@ input {
     type="password"
     name="pppoe_password"
     placeholder="Leave blank to keep current">
+    </div>
+
+
+    <div>
+        <strong>IP Mode:</strong>
+        <select name="ip_mode" id="wanIpMode{{ w.wan_id }}" onchange="updateWanIpMode('{{ w.wan_id }}')">
+            <option value="ipv4" {% if (w.ip_mode or 'ipv4') == 'ipv4' %}selected{% endif %}>IPv4 Only</option>
+            <option value="dual" {% if w.ip_mode == 'dual' %}selected{% endif %}>IPv4 + IPv6</option>
+            <option value="ipv6" {% if w.ip_mode == 'ipv6' %}selected{% endif %}>IPv6 Only</option>
+        </select>
+    </div>
+
+    <div id="wanIpv6CountRow{{ w.wan_id }}" style="{% if w.ip_mode != 'ipv6' %}display:none;{% endif %}">
+        <strong>IPv6 per Session:</strong>
+        <input type="number" name="ipv6_per_session" min="1" max="99" value="{{ w.ipv6_per_session or 1 }}">
     </div>
 
 </form>
@@ -570,109 +600,34 @@ input {
 
 {% endif %}
 
-<div class="wan-config"
-     style="margin-top:18px;">
-
-    <div class="session-title">
-        Dynamic DNS
-    </div>
-
-</div>
-
-<form method="post"
-      action="/ddns-save/{{ w.wan_id }}"
-      class="wan-config">
-
-    <div>
-        <strong>Enable DDNS:</strong>
-
-        <input
-            type="checkbox"
-            name="enabled"
-            value="yes"
-            {% if w.ddns.enabled == "yes" %}checked{% endif %}>
-    </div>
-
-    <div>
-        <strong>Provider:</strong>
-
-        <select name="provider">
-            <option value="noip"
-                    {% if w.ddns.provider == "noip" %}selected{% endif %}>
-                No-IP
-            </option>
-        </select>
-    </div>
-
-    <div>
-        <strong>Hostname:</strong>
-
-        <input
-            type="text"
-            name="hostname"
-            value="{{ w.ddns.hostname }}"
-            placeholder="example.ddns.net"
-            required>
-    </div>
-
-    <div>
-        <strong>Username:</strong>
-
-        <input
-            type="text"
-            name="username"
-            value="{{ w.ddns.username }}"
-            required>
-    </div>
-
-    <div>
-        <strong>Password:</strong>
-
-        <input
-            type="password"
-            name="password"
-            placeholder="{% if w.ddns.has_password %}Leave blank to keep current{% else %}Enter DDNS password{% endif %}">
-    </div>
-
-    <div>
-        <strong>Check Interval:</strong>
-
-        <input
-            type="number"
-            name="interval_sec"
-            min="30"
-            value="{{ w.ddns.interval_sec }}"
-            required>
-
-        <span>seconds</span>
-    </div>
-
-    <div class="wan-buttons">
-        <button type="submit">
-            Save DDNS
-        </button>
-    </div>
-
-</form>
-
-{% if w.ddns.enabled == "yes" %}
-
-<form method="post"
-      action="/ddns-disable/{{ w.wan_id }}"
-      style="margin-top:8px;">
-
-    <button type="submit">
-        Disable DDNS
-    </button>
-
-</form>
-
-{% endif %}
-
 </div>
 
 {% endfor %}
 
+</div>
+
+
+<h2>Copy Proxies</h2>
+
+{% for w in wans %}
+<div class="card">
+    <div class="session-title">WAN {{ w.wan_id }} — {{ w.interface }}</div>
+    <textarea id="socksListWan{{ w.wan_id }}" class="proxy-list" style="display:none;" readonly></textarea>
+    <textarea id="httpListWan{{ w.wan_id }}" class="proxy-list" style="display:none;" readonly></textarea>
+    <div class="wan-buttons">
+        <button type="button" onclick="copySocksWan({{ w.wan_id }}, 'ipv4')">Copy SOCKS5 IPv4</button>
+        <button type="button" onclick="copySocksWan({{ w.wan_id }}, 'ipv6')">Copy SOCKS5 IPv6</button>
+        <button type="button" onclick="copyHttpWan({{ w.wan_id }}, 'ipv4')">Copy HTTP IPv4</button>
+        <button type="button" onclick="copyHttpWan({{ w.wan_id }}, 'ipv6')">Copy HTTP IPv6</button>
+    </div>
+</div>
+{% endfor %}
+
+<div class="card">
+    <div class="wan-buttons">
+        <button type="button" onclick="copySocksAll()">Copy All SOCKS5</button>
+        <button type="button" onclick="copyHttpAll()">Copy All HTTP</button>
+    </div>
 </div>
 
 <h2>Proxy Sessions</h2>
@@ -814,69 +769,6 @@ input {
 {% endfor %}
 
 
-<h2>SOCKS5 Proxies</h2>
-
-{% for w in wans %}
-
-<div class="card">
-
-    <div class="session-title">
-        WAN {{ w.wan_id }} — {{ w.interface }}
-    </div>
-
-    <textarea
-        id="socksListWan{{ w.wan_id }}"
-        class="proxy-list"
-        readonly></textarea>
-
-    <br><br>
-
-    <button onclick="copySocksWan({{ w.wan_id }})">
-        Copy SOCKS5 WAN {{ w.wan_id }}
-    </button>
-
-</div>
-
-{% endfor %}
-
-<div class="card">
-    <button onclick="copySocksAll()">
-        Copy All SOCKS5
-    </button>
-</div>
-
-
-<h2>HTTP Proxies</h2>
-
-{% for w in wans %}
-
-<div class="card">
-
-    <div class="session-title">
-        WAN {{ w.wan_id }} — {{ w.interface }}
-    </div>
-
-    <textarea
-        id="httpListWan{{ w.wan_id }}"
-        class="proxy-list"
-        readonly></textarea>
-
-    <br><br>
-
-    <button onclick="copyHttpWan({{ w.wan_id }})">
-        Copy HTTP WAN {{ w.wan_id }}
-    </button>
-
-</div>
-
-{% endfor %}
-
-<div class="card">
-    <button onclick="copyHttpAll()">
-        Copy All HTTP
-    </button>
-</div>
-
 <script>
 
 
@@ -1014,6 +906,11 @@ function updateAddWanType() {
     const isPppoe = type === 'pppoe';
     const isWifi = type === 'wifi';
 
+    const ipModeRow = document.getElementById('addWanIpModeRow');
+    if (ipModeRow) {
+        ipModeRow.style.display = isPppoe ? 'flex' : 'none';
+    }
+
     pppoeUserRow.style.display =
         isPppoe ? 'flex' : 'none';
 
@@ -1034,6 +931,27 @@ function updateAddWanType() {
 
     wifiSsidInput.required = isWifi;
     wifiPasswordInput.required = isWifi;
+    updateAddWanIpMode();
+}
+
+function updateAddWanIpMode() {
+    const type = document.getElementById('addWanType');
+    const mode = document.getElementById('addWanIpMode');
+    const row = document.getElementById('addWanIpv6CountRow');
+    const input = document.getElementById('addWanIpv6Count');
+    if (!type || !mode || !row || !input) return;
+
+    const show = type.value === 'pppoe' && mode.value === 'ipv6';
+    row.style.display = show ? 'flex' : 'none';
+    input.required = show;
+    if (!show) input.value = '1';
+}
+
+function updateWanIpMode(wanId) {
+    const mode = document.getElementById('wanIpMode' + wanId);
+    const row = document.getElementById('wanIpv6CountRow' + wanId);
+    if (!mode || !row) return;
+    row.style.display = mode.value === 'ipv6' ? 'flex' : 'none';
 }
 
 async function toggleAddWan() {
@@ -1098,27 +1016,21 @@ async function copyText(text) {
     return ok;
 }
 
-async function copySocksWan(wanId) {
-    const r = await fetch('/api/copy-socks/' + wanId);
+async function copySocksWan(wanId, family = 'all') {
+    const r = await fetch('/api/copy-socks/' + wanId + '?family=' + encodeURIComponent(family));
     const j = await r.json();
-
-    document.getElementById(
-        'socksListWan' + wanId
-    ).value = j.text;
-
+    const box = document.getElementById('socksListWan' + wanId);
+    if (box) box.value = j.text;
     await copyText(j.text);
 }
 
 
-async function copyHttpWan(wanId) {
-    const r = await fetch('/api/copy-http/' + wanId);
+async function copyHttpWan(wanId, family = 'all') {
+    const r = await fetch('/api/copy-http/' + wanId + '?family=' + encodeURIComponent(family));
     const j = await r.json();
-
-    document.getElementById(
-        'httpListWan' + wanId
-    ).value = j.text;
+    const box = document.getElementById('httpListWan' + wanId);
+    if (box) box.value = j.text;
     await copyText(j.text);
-
 }
 
 

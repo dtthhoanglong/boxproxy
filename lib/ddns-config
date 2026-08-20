@@ -37,7 +37,7 @@ case "$ACTION" in
         USERNAME="$4"
         NEW_PASSWORD="$5"
         INTERVAL_SEC="$6"
-        ENABLED="$7"
+        NEW_ENABLED="$7"
 
         [ -n "$WAN_ID" ] || exit 1
         [ -n "$HOSTNAME" ] || {
@@ -62,6 +62,8 @@ case "$ACTION" in
             . "$CONF"
             OLD_PASSWORD="${PASSWORD:-}"
         fi
+
+        ENABLED="$NEW_ENABLED"
 
         if [ -n "$NEW_PASSWORD" ]; then
             PASSWORD="$NEW_PASSWORD"

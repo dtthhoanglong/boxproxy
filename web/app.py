@@ -100,6 +100,18 @@ def index():
         wans=wans
     )
 
+@app.route("/ddns")
+def ddns_page():
+    wans = read_wans()
+
+    for wan in wans:
+        wan["ddns"] = read_ddns(wan["wan_id"])
+
+    return render_template(
+        "ddns.html",
+        wans=wans
+    )
+
 @app.route("/routing")
 def routing_page():
     proxies = read_instances()
@@ -171,6 +183,8 @@ def wan_save(wan_id):
 
     username = request.form.get("pppoe_user", "").strip()
     password = request.form.get("pppoe_password", "").strip()
+    ip_mode = request.form.get("ip_mode", "ipv4").strip() or "ipv4"
+    ipv6_per_session = request.form.get("ipv6_per_session", "1").strip() or "1"
 
     if not interface or not username:
         return redirect("/")
@@ -183,7 +197,9 @@ def wan_save(wan_id):
             str(wan_id),
             interface,
             username,
-            password
+            password,
+            ip_mode,
+            ipv6_per_session
         ]
     )
 
@@ -271,13 +287,13 @@ def ddns_save(wan_id):
     )
 
     if not hostname or not username:
-        return redirect("/")
+        return redirect("/ddns")
 
     if not interval_sec.isdigit():
-        return redirect("/")
+        return redirect("/ddns")
 
     if int(interval_sec) < 30:
-        return redirect("/")
+        return redirect("/ddns")
 
     run_cmd(
         [
@@ -293,7 +309,7 @@ def ddns_save(wan_id):
         ]
     )
 
-    return redirect("/")
+    return redirect("/ddns")
 
 
 @app.post("/ddns-disable/<int:wan_id>")
@@ -307,7 +323,7 @@ def ddns_disable(wan_id):
         ]
     )
 
-    return redirect("/")
+    return redirect("/ddns")
 
 @app.post("/wan-delete/<int:wan_id>")
 def wan_delete(wan_id):
@@ -325,7 +341,7 @@ def wan_delete(wan_id):
 @app.get("/api/copy-socks")
 def copy_socks():
     _, out, _ = run_cmd(
-        ["sudo", BOXPROXY, "copy-socks"]
+        ["sudo", BOXPROXY, "copy-socks", "all", request.args.get("family", "all")]
     )
 
     return jsonify({"text": out})
@@ -333,7 +349,7 @@ def copy_socks():
 @app.get("/api/copy-http")
 def copy_http():
     _, out, _ = run_cmd(
-        ["sudo", BOXPROXY, "copy-http"]
+        ["sudo", BOXPROXY, "copy-http", "all", request.args.get("family", "all")]
     )
 
     return jsonify({"text": out})
@@ -341,7 +357,7 @@ def copy_http():
 @app.get("/api/copy-socks/<int:wan_id>")
 def copy_socks_wan(wan_id):
     _, out, _ = run_cmd(
-        ["sudo", BOXPROXY, "copy-socks", str(wan_id)]
+        ["sudo", BOXPROXY, "copy-socks", str(wan_id), request.args.get("family", "all")]
     )
     return jsonify({"text": out})
 
@@ -349,7 +365,7 @@ def copy_socks_wan(wan_id):
 @app.get("/api/copy-http/<int:wan_id>")
 def copy_http_wan(wan_id):
     _, out, _ = run_cmd(
-        ["sudo", BOXPROXY, "copy-http", str(wan_id)]
+        ["sudo", BOXPROXY, "copy-http", str(wan_id), request.args.get("family", "all")]
     )
     return jsonify({"text": out})
 
@@ -543,6 +559,8 @@ def wan_add():
 
     username = request.form.get("pppoe_user", "").strip()
     password = request.form.get("pppoe_password", "").strip()
+    ip_mode = request.form.get("ip_mode", "ipv4").strip() or "ipv4"
+    ipv6_per_session = request.form.get("ipv6_per_session", "1").strip() or "1"
 
     if not username or not password:
         return redirect("/")
@@ -554,7 +572,9 @@ def wan_add():
             "wan-add",
             interface,
             username,
-            password
+            password,
+            ip_mode,
+            ipv6_per_session
         ]
     )
 

@@ -1520,6 +1520,7 @@ wan-add)
     NEW_USER="$ARG3"
     NEW_PASS="$ARG4"
     NEW_IP_MODE="${ARG5:-ipv4}"
+    NEW_IPV6_PER_SESSION="${ARG6:-1}"
 
     case "$NEW_IP_MODE" in
     ipv4|dual|ipv6)
@@ -1533,13 +1534,18 @@ esac
 # IPv6 per Session chỉ áp dụng cho IPv6 Only.
 # IPv4 và Dual luôn cố định 1 địa chỉ mỗi family/session.
 if [ "$NEW_IP_MODE" = "ipv6" ]; then
-    NEW_IPV6_PER_SESSION="$OLD_IPV6_PER_SESSION"
+    if ! [[ "$NEW_IPV6_PER_SESSION" =~ ^[0-9]+$ ]] || \
+       [ "$NEW_IPV6_PER_SESSION" -lt 1 ] || \
+       [ "$NEW_IPV6_PER_SESSION" -gt 99 ]; then
+        echo "Invalid IPv6 per session count (allowed 1..99)"
+        exit 1
+    fi
 else
     NEW_IPV6_PER_SESSION="1"
 fi
 
     if [ -z "$NEW_IF" ] || [ -z "$NEW_USER" ] || [ -z "$NEW_PASS" ]; then
-	echo "Usage: boxproxy wan-add <interface> <user> <password> [ipv4|dual|ipv6]"
+	echo "Usage: boxproxy wan-add <interface> <user> <password> [ipv4|dual|ipv6] [ipv6_per_session]"
         exit 1
     fi
 
@@ -1685,6 +1691,7 @@ printf '  {"wan_id":%s,"wan_type":"%s","interface":"%s","pppoe_user":"%s","wifi_
     NEW_USER="$ARG4"
     NEW_PASS="$ARG5"
     NEW_IP_MODE="${ARG6:-}"
+    NEW_IPV6_PER_SESSION="${ARG7:-}"
 
     if [ -z "$WAN_ID" ] || [ -z "$NEW_IF" ] || [ -z "$NEW_USER" ]; then
         echo "Usage: boxproxy wan-save <wan_id> <interface> <user> [password]"
@@ -1728,7 +1735,16 @@ esac
 # IPv6 per Session chỉ dùng cho IPv6 Only.
 # IPv4 và Dual luôn cố định count = 1.
 if [ "$NEW_IP_MODE" = "ipv6" ]; then
-    NEW_IPV6_PER_SESSION="$OLD_IPV6_PER_SESSION"
+    if [ -z "$NEW_IPV6_PER_SESSION" ]; then
+        NEW_IPV6_PER_SESSION="$OLD_IPV6_PER_SESSION"
+    fi
+
+    if ! [[ "$NEW_IPV6_PER_SESSION" =~ ^[0-9]+$ ]] || \
+       [ "$NEW_IPV6_PER_SESSION" -lt 1 ] || \
+       [ "$NEW_IPV6_PER_SESSION" -gt 99 ]; then
+        echo "Invalid IPv6 per session count (allowed 1..99)"
+        exit 1
+    fi
 else
     NEW_IPV6_PER_SESSION="1"
 fi
