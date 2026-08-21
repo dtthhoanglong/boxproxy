@@ -185,6 +185,7 @@ install -m 644 "$REPO_DIR/web/templates/index.html" \
 
 install -m 644 "$REPO_DIR/web/templates/routing.html" \
     /opt/boxproxy-web/templates/routing.html
+install -m 644 "$REPO_DIR/web/templates/ddns.html" /opt/boxproxy-web/templates/ddns.html
 
 chown -R "$ADMIN_USER:$ADMIN_USER" /opt/boxproxy-web
 

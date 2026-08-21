@@ -89,86 +89,6 @@ iptables -t nat -A PREROUTING \
 ip rule del pref "$RULE_PREF" 2>/dev/null || true
 ip rule add fwmark "$MARK" table "$TABLE" priority "$RULE_PREF"
 
-# =========================
-# IPv6 MAC routing
-# =========================
-
-# MARK IPv6 theo MAC nguồn trên LAN.
-ip6tables -t mangle -C PREROUTING \
-    -i "$LAN_IF" \
-    -m mac --mac-source "$CLIENT_MAC" \
-    -m comment --comment "BOXPROXY-CLIENT" \
-    -j MARK --set-mark "$MARK" \
-    2>/dev/null || \
-ip6tables -t mangle -A PREROUTING \
-    -i "$LAN_IF" \
-    -m mac --mac-source "$CLIENT_MAC" \
-    -m comment --comment "BOXPROXY-CLIENT" \
-    -j MARK --set-mark "$MARK"
-
-# fwmark IPv6 -> cùng routing table của proxy instance.
-ip -6 rule del pref "$RULE_PREF" 2>/dev/null || true
-ip -6 rule add \
-    fwmark "$MARK" \
-    table "$TABLE" \
-    priority "$RULE_PREF"
-
-# Prefix ULA cố định của LAN.
-LAN_IPV6_PREFIX="fd00:10:10:10::/64"
-
-# Lấy delegated prefix hiện tại của đúng proxy instance.
-PD_PREFIX=$(
-    /usr/local/lib/boxproxy/ipv6-pd-prefix "$INSTANCE_ID"
-) || {
-    echo "No IPv6 PD for proxy $INSTANCE_ID"
-    exit 1
-}
-
-# Dịch 1:1 ULA -> delegated prefix của đúng PPPoE.
-# Conntrack/NAT sẽ tự dịch ngược return traffic.
-ip6tables -t nat -C POSTROUTING \
-    -s "$LAN_IPV6_PREFIX" \
-    -o "$EGRESS_IF" \
-    -m comment --comment "BOXPROXY-CLIENT" \
-    -j NETMAP --to "$PD_PREFIX" \
-    2>/dev/null || \
-ip6tables -t nat -A POSTROUTING \
-    -s "$LAN_IPV6_PREFIX" \
-    -o "$EGRESS_IF" \
-    -m comment --comment "BOXPROXY-CLIENT" \
-    -j NETMAP --to "$PD_PREFIX"
-
-# IPv6 LAN -> đúng egress.
-# Client dùng ULA; NETMAP phía trên đổi sang PD của instance.
-ip6tables -C FORWARD \
-    -i "$LAN_IF" \
-    -o "$EGRESS_IF" \
-    -m mac --mac-source "$CLIENT_MAC" \
-    -m comment --comment "BOXPROXY-CLIENT" \
-    -j ACCEPT \
-    2>/dev/null || \
-ip6tables -A FORWARD \
-    -i "$LAN_IF" \
-    -o "$EGRESS_IF" \
-    -m mac --mac-source "$CLIENT_MAC" \
-    -m comment --comment "BOXPROXY-CLIENT" \
-    -j ACCEPT
-
-# Return traffic IPv6 từ egress -> LAN.
-ip6tables -C FORWARD \
-    -i "$EGRESS_IF" \
-    -o "$LAN_IF" \
-    -m conntrack --ctstate ESTABLISHED,RELATED \
-    -m comment --comment "BOXPROXY-CLIENT" \
-    -j ACCEPT \
-    2>/dev/null || \
-ip6tables -A FORWARD \
-    -i "$EGRESS_IF" \
-    -o "$LAN_IF" \
-    -m conntrack --ctstate ESTABLISHED,RELATED \
-    -m comment --comment "BOXPROXY-CLIENT" \
-    -j ACCEPT
-
 # NAT client qua đúng egress interface
 iptables -t nat -C POSTROUTING \
     -s "${CLIENT_IP}/32" \
@@ -213,6 +133,93 @@ iptables -A FORWARD \
     -m conntrack --ctstate ESTABLISHED,RELATED \
     -m comment --comment "BOXPROXY-CLIENT" \
     -j ACCEPT
+
+# =========================
+# IPv6 MAC routing
+# =========================
+# IPv4 routing above is completed first.
+# IPv4-only instances never depend on IPv6 PD.
+case "${IP_MODE:-ipv4}" in
+    dual|ipv6)
+
+        # MARK IPv6 theo MAC nguồn trên LAN.
+        ip6tables -t mangle -C PREROUTING \
+            -i "$LAN_IF" \
+            -m mac --mac-source "$CLIENT_MAC" \
+            -m comment --comment "BOXPROXY-CLIENT" \
+            -j MARK --set-mark "$MARK" \
+            2>/dev/null || \
+        ip6tables -t mangle -A PREROUTING \
+            -i "$LAN_IF" \
+            -m mac --mac-source "$CLIENT_MAC" \
+            -m comment --comment "BOXPROXY-CLIENT" \
+            -j MARK --set-mark "$MARK"
+
+        # fwmark IPv6 -> cùng routing table của proxy instance.
+        ip -6 rule del pref "$RULE_PREF" 2>/dev/null || true
+        ip -6 rule add \
+            fwmark "$MARK" \
+            table "$TABLE" \
+            priority "$RULE_PREF"
+
+        # Prefix ULA cố định của LAN.
+        LAN_IPV6_PREFIX="fd00:10:10:10::/64"
+
+        # Lấy delegated prefix hiện tại của đúng proxy instance.
+        PD_PREFIX=$(
+            /usr/local/lib/boxproxy/ipv6-pd-prefix "$INSTANCE_ID"
+        ) || {
+            echo "No IPv6 PD for proxy $INSTANCE_ID"
+            exit 1
+        }
+
+        # Dịch 1:1 ULA -> delegated prefix của đúng PPPoE.
+        # Conntrack/NAT sẽ tự dịch ngược return traffic.
+        ip6tables -t nat -C POSTROUTING \
+            -s "$LAN_IPV6_PREFIX" \
+            -o "$EGRESS_IF" \
+            -m comment --comment "BOXPROXY-CLIENT" \
+            -j NETMAP --to "$PD_PREFIX" \
+            2>/dev/null || \
+        ip6tables -t nat -A POSTROUTING \
+            -s "$LAN_IPV6_PREFIX" \
+            -o "$EGRESS_IF" \
+            -m comment --comment "BOXPROXY-CLIENT" \
+            -j NETMAP --to "$PD_PREFIX"
+
+        # IPv6 LAN -> đúng egress.
+        # Client dùng ULA; NETMAP phía trên đổi sang PD của instance.
+        ip6tables -C FORWARD \
+            -i "$LAN_IF" \
+            -o "$EGRESS_IF" \
+            -m mac --mac-source "$CLIENT_MAC" \
+            -m comment --comment "BOXPROXY-CLIENT" \
+            -j ACCEPT \
+            2>/dev/null || \
+        ip6tables -A FORWARD \
+            -i "$LAN_IF" \
+            -o "$EGRESS_IF" \
+            -m mac --mac-source "$CLIENT_MAC" \
+            -m comment --comment "BOXPROXY-CLIENT" \
+            -j ACCEPT
+
+        # Return traffic IPv6 từ egress -> LAN.
+        ip6tables -C FORWARD \
+            -i "$EGRESS_IF" \
+            -o "$LAN_IF" \
+            -m conntrack --ctstate ESTABLISHED,RELATED \
+            -m comment --comment "BOXPROXY-CLIENT" \
+            -j ACCEPT \
+            2>/dev/null || \
+        ip6tables -A FORWARD \
+            -i "$EGRESS_IF" \
+            -o "$LAN_IF" \
+            -m conntrack --ctstate ESTABLISHED,RELATED \
+            -m comment --comment "BOXPROXY-CLIENT" \
+            -j ACCEPT
+
+        ;;
+esac
 
 echo "Client route enabled:"
 echo "MAC        : $CLIENT_MAC"
