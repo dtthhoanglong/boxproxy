@@ -54,6 +54,16 @@ DNS_PORT=$((5300 + ID))
     echo "port=${DNS_PORT}"
     echo
 
+    case "${IP_MODE:-ipv4}" in
+        ipv4)
+            echo "filter-AAAA"
+            ;;
+        ipv6)
+            echo "filter-A"
+            ;;
+    esac
+    echo
+
     echo "server=${DNS1}@${EGRESS_IF}"
 
     if [ -n "${DNS2:-}" ] && [ "$DNS2" != "$DNS1" ]; then

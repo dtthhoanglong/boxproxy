@@ -1921,6 +1921,23 @@ fi
     done
 fi
 
+    # Restart PPPoE instances only when IP mode changes.
+    if [ "$OLD_IP_MODE" != "$NEW_IP_MODE" ]; then
+        echo "IP mode changed: $OLD_IP_MODE -> $NEW_IP_MODE"
+
+        for CONF in /etc/boxproxy/instances/*.conf; do
+            [ -f "$CONF" ] || continue
+            INSTANCE_WAN=$(grep '^WAN_ID=' "$CONF" | cut -d= -f2 | tr -d '"')
+            [ "$INSTANCE_WAN" = "$WAN_ID" ] || continue
+            INSTANCE_ID=$(basename "$CONF" .conf)
+            echo "Restarting Proxy $INSTANCE_ID to apply IP mode..."
+            "$0" restart "$INSTANCE_ID"
+        done
+
+        sleep 3
+        /usr/local/lib/boxproxy/client-route-sync || true
+    fi
+
     echo "WAN $WAN_ID saved"
     echo "Interface : $NEW_IF"
     echo "MAC       : $NEW_MAC"
