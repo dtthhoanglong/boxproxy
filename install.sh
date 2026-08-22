@@ -141,6 +141,9 @@ echo "============================================================"
 install -m 755 "$REPO_DIR/bin/boxproxy" \
     /usr/local/sbin/boxproxy
 
+install -m 755 "$REPO_DIR/bin/boxproxy-setup-network" \
+    /usr/local/sbin/boxproxy-setup-network
+
 for FILE in "$REPO_DIR"/lib/*; do
     [ -f "$FILE" ] || continue
 

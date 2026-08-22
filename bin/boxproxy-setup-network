@@ -1,0 +1,78 @@
+#!/bin/bash
+set -euo pipefail
+
+if [ "$EUID" -ne 0 ]; then
+  echo "Run with sudo: sudo boxproxy-setup-network"
+  exit 1
+fi
+
+ADMIN_USER="${SUDO_USER:-ubuntu}"
+REPO_DIR="/home/$ADMIN_USER/boxproxy"
+
+echo "Available interfaces:"
+ip -br link | awk '$1 != "lo" {print "  " $1 "  " $2 "  " $3}'
+echo
+read -rp "Enter WAN interface: " WAN_IF
+read -rp "Enter LAN interface: " LAN_IF
+
+WAN_IF="${WAN_IF%%@*}"
+LAN_IF="${LAN_IF%%@*}"
+
+[ -n "$WAN_IF" ] && [ -n "$LAN_IF" ] || { echo "WAN/LAN cannot be empty"; exit 1; }
+[ "$WAN_IF" != "$LAN_IF" ] || { echo "WAN and LAN must differ"; exit 1; }
+[ -d "/sys/class/net/$WAN_IF" ] || { echo "WAN not found: $WAN_IF"; exit 1; }
+[ -d "/sys/class/net/$LAN_IF" ] || { echo "LAN not found: $LAN_IF"; exit 1; }
+
+echo "WAN: $WAN_IF"
+echo "LAN: $LAN_IF"
+read -rp "Apply? [y/N]: " OK
+case "$OK" in y|Y|yes|YES) ;; *) exit 0 ;; esac
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP="/root/boxproxy-network-backup-$STAMP"
+mkdir -p "$BACKUP"
+cp -a /etc/boxproxy/settings.conf "$BACKUP/" 2>/dev/null || true
+cp -a /etc/default/isc-dhcp-server "$BACKUP/" 2>/dev/null || true
+cp -a /etc/netplan/01-boxproxy.yaml "$BACKUP/" 2>/dev/null || true
+cp -a /etc/sysctl.d/90-boxproxy-ipv6-router.conf "$BACKUP/" 2>/dev/null || true
+cp -a /etc/radvd.conf "$BACKUP/" 2>/dev/null || true
+
+grep -q '^LAN_IF=' /etc/boxproxy/settings.conf && sed -i "s/^LAN_IF=.*/LAN_IF=\"$LAN_IF\"/" /etc/boxproxy/settings.conf
+
+cp "$REPO_DIR/config/dhcp/isc-dhcp-server.example" /etc/default/isc-dhcp-server
+sed -i "s/LAN_INTERFACE/$LAN_IF/g" /etc/default/isc-dhcp-server
+
+rm -f /etc/netplan/*.yaml /etc/netplan/*.yml
+cp "$REPO_DIR/config/system/01-boxproxy.yaml.example" /etc/netplan/01-boxproxy.yaml
+sed -i -e "s/WAN_INTERFACE/$WAN_IF/g" -e "s/LAN_INTERFACE/$LAN_IF/g" /etc/netplan/01-boxproxy.yaml
+chmod 600 /etc/netplan/01-boxproxy.yaml
+
+cp "$REPO_DIR/config/system/90-boxproxy-ipv6-router.conf.example" /etc/sysctl.d/90-boxproxy-ipv6-router.conf
+sed -i "s/LAN_INTERFACE/$LAN_IF/g" /etc/sysctl.d/90-boxproxy-ipv6-router.conf
+
+cp "$REPO_DIR/config/radvd/radvd.conf.example" /etc/radvd.conf
+sed -i "s/LAN_INTERFACE/$LAN_IF/g" /etc/radvd.conf
+chmod 644 /etc/radvd.conf
+
+netplan generate
+dhcpd -t -cf /etc/dhcp/dhcpd.conf
+radvd --configtest -C /etc/radvd.conf
+
+ip link set "$WAN_IF" up 2>/dev/null || true
+ip link set "$LAN_IF" up 2>/dev/null || true
+netplan apply
+sysctl --system >/dev/null
+
+systemctl restart isc-dhcp-server
+systemctl restart radvd
+systemctl restart boxproxy-web.service 2>/dev/null || true
+systemctl restart boxproxy-client-routing.service 2>/dev/null || true
+
+echo "WAN=$WAN_IF"
+echo "LAN=$LAN_IF"
+ip -br addr show "$WAN_IF" || true
+ip -br addr show "$LAN_IF" || true
+echo -n "DHCP: "; systemctl is-active isc-dhcp-server || true
+echo -n "RADVD: "; systemctl is-active radvd || true
+echo -n "WEB: "; systemctl is-active boxproxy-web.service || true
+echo "Backup: $BACKUP"
