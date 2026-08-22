@@ -68,6 +68,12 @@ systemctl restart radvd
 systemctl restart boxproxy-web.service 2>/dev/null || true
 systemctl restart boxproxy-client-routing.service 2>/dev/null || true
 
+# A cloned/master image may intentionally have no SSH host keys.
+# Generate only missing keys, then recover ssh.service.
+ssh-keygen -A
+systemctl reset-failed ssh.service 2>/dev/null || true
+systemctl restart ssh.service 2>/dev/null || true
+
 echo "WAN=$WAN_IF"
 echo "LAN=$LAN_IF"
 ip -br addr show "$WAN_IF" || true
@@ -75,4 +81,5 @@ ip -br addr show "$LAN_IF" || true
 echo -n "DHCP: "; systemctl is-active isc-dhcp-server || true
 echo -n "RADVD: "; systemctl is-active radvd || true
 echo -n "WEB: "; systemctl is-active boxproxy-web.service || true
+echo -n "SSH: "; systemctl is-active ssh.service || true
 echo "Backup: $BACKUP"

@@ -107,7 +107,10 @@ apt-get install -y \
     curl \
     networkd-dispatcher \
     dhcpcd5 \
-    radvd     util-linux
+    radvd \
+    wpasupplicant \
+    iw \
+    util-linux
 
 # BoxProxy uses per-instance dhcpcd processes for DHCPv6-PD.
 # The global daemon must not configure PPPoE macvlan/WAN interfaces.
